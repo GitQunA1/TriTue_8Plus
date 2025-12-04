@@ -7,6 +7,12 @@ import {
   Select,
   Checkbox,
   Calendar as AntCalendar,
+  Modal,
+  Form,
+  TimePicker,
+  DatePicker,
+  message,
+  Tag,
 } from "antd";
 import {
   LeftOutlined,
@@ -14,11 +20,12 @@ import {
   CalendarOutlined,
   BookOutlined,
   EnvironmentOutlined,
+  EditOutlined,
 } from "@ant-design/icons";
 import { useClasses } from "../../hooks/useClasses";
 import { useAuth } from "../../contexts/AuthContext";
 import { Class, ClassSchedule } from "../../types";
-import { ref, onValue } from "firebase/database";
+import { ref, onValue, push, set, remove, update } from "firebase/database";
 import { database } from "../../firebase";
 import { useNavigate } from "react-router-dom";
 import dayjs, { Dayjs } from "dayjs";
@@ -40,6 +47,23 @@ interface ScheduleEvent {
   date: Dayjs;
   startMinutes: number;
   durationMinutes: number;
+  scheduleId?: string; // ID from Thời_khoá_biểu if exists
+  isCustomSchedule?: boolean; // True if from Thời_khoá_biểu
+}
+
+interface TimetableEntry {
+  id: string;
+  "Class ID": string;
+  "Mã lớp": string;
+  "Tên lớp": string;
+  "Ngày": string;
+  "Thứ": number;
+  "Giờ bắt đầu": string;
+  "Giờ kết thúc": string;
+  "Phòng học"?: string;
+  "Ghi chú"?: string;
+  "Thay thế ngày"?: string;
+  "Thay thế thứ"?: number;
 }
 
 type ViewMode = "all" | "subject" | "location";
@@ -58,6 +82,14 @@ const TeacherSchedule = () => {
   const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(new Set());
   const [selectedLocations, setSelectedLocations] = useState<Set<string>>(new Set());
   const [rooms, setRooms] = useState<Map<string, any>>(new Map());
+  
+  // Drag & Drop và Edit states
+  const [timetableEntries, setTimetableEntries] = useState<Map<string, TimetableEntry>>(new Map());
+  const [draggingEvent, setDraggingEvent] = useState<ScheduleEvent | null>(null);
+  const [dragOverDay, setDragOverDay] = useState<number | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingEvent, setEditingEvent] = useState<ScheduleEvent | null>(null);
+  const [editForm] = Form.useForm();
 
   const teacherId =
     teacherData?.id || userProfile?.teacherId || userProfile?.uid || "";
@@ -81,6 +113,39 @@ const TeacherSchedule = () => {
     });
     return () => unsubscribe();
   }, []);
+
+  // Load timetable entries (lịch học bù)
+  useEffect(() => {
+    const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+    const unsubscribe = onValue(timetableRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const entriesMap = new Map<string, TimetableEntry>();
+        Object.entries(data).forEach(([id, value]: [string, any]) => {
+          const key = `${value["Class ID"]}_${value["Ngày"]}_${value["Thứ"]}`;
+          entriesMap.set(key, { id, ...value });
+        });
+        setTimetableEntries(entriesMap);
+      } else {
+        setTimetableEntries(new Map());
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Helper: Check if a date is replaced by a custom schedule
+  const isDateReplacedByCustomSchedule = (classId: string, dateStr: string, dayOfWeek: number): boolean => {
+    for (const [, entry] of timetableEntries) {
+      if (
+        entry["Class ID"] === classId &&
+        entry["Thay thế ngày"] === dateStr &&
+        entry["Thay thế thứ"] === dayOfWeek
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
 
   useEffect(() => {
     if (!userProfile?.email) return;
@@ -161,36 +226,56 @@ const TeacherSchedule = () => {
 
     weekDays.forEach((date) => {
       const dayOfWeek = date.day() === 0 ? 8 : date.day() + 1;
+      const dateStr = date.format("YYYY-MM-DD");
 
       filteredClasses.forEach((classData) => {
-        const startDate = classData["Ngày bắt đầu"]
-          ? dayjs(classData["Ngày bắt đầu"])
-          : null;
-        const endDate = classData["Ngày kết thúc"]
-          ? dayjs(classData["Ngày kết thúc"])
-          : null;
+        // Lịch học hiển thị tất cả các tuần (không giới hạn ngày bắt đầu/kết thúc)
 
-        const isWithinDateRange =
-          (!startDate || date.isSameOrAfter(startDate, "day")) &&
-          (!endDate || date.isSameOrBefore(endDate, "day"));
+        // Check if there's a custom schedule in Thời_khoá_biểu
+        const timetableKey = `${classData.id}_${dateStr}_${dayOfWeek}`;
+        const customSchedule = timetableEntries.get(timetableKey);
 
-        if (!isWithinDateRange) return;
-
-        const schedules = classData["Lịch học"]?.filter(
-          (s) => s["Thứ"] === dayOfWeek
-        ) || [];
-
-        schedules.forEach((schedule) => {
-          const startMinutes = timeToMinutes(schedule["Giờ bắt đầu"]);
-          const endMinutes = timeToMinutes(schedule["Giờ kết thúc"]);
+        if (customSchedule) {
+          // Use custom schedule from Thời_khoá_biểu
+          const startMinutes = timeToMinutes(customSchedule["Giờ bắt đầu"]);
+          const endMinutes = timeToMinutes(customSchedule["Giờ kết thúc"]);
           events.push({
             class: classData,
-            schedule,
+            schedule: {
+              "Thứ": customSchedule["Thứ"],
+              "Giờ bắt đầu": customSchedule["Giờ bắt đầu"],
+              "Giờ kết thúc": customSchedule["Giờ kết thúc"],
+            },
             date,
             startMinutes,
             durationMinutes: endMinutes - startMinutes,
+            scheduleId: customSchedule.id,
+            isCustomSchedule: true,
           });
-        });
+        } else {
+          // Check if this date has been replaced by a custom schedule
+          if (isDateReplacedByCustomSchedule(classData.id, dateStr, dayOfWeek)) {
+            return; // Skip - this date's schedule has been moved
+          }
+
+          // Fallback to class schedule
+          const schedules = classData["Lịch học"]?.filter(
+            (s) => s["Thứ"] === dayOfWeek
+          ) || [];
+
+          schedules.forEach((schedule) => {
+            const startMinutes = timeToMinutes(schedule["Giờ bắt đầu"]);
+            const endMinutes = timeToMinutes(schedule["Giờ kết thúc"]);
+            events.push({
+              class: classData,
+              schedule,
+              date,
+              startMinutes,
+              durationMinutes: endMinutes - startMinutes,
+              isCustomSchedule: false,
+            });
+          });
+        }
       });
     });
 
@@ -283,6 +368,196 @@ const TeacherSchedule = () => {
       newSelected.add(location);
     }
     setSelectedLocations(newSelected);
+  };
+
+  // ===== DRAG & DROP HANDLERS =====
+  const handleDragStart = (e: React.DragEvent, event: ScheduleEvent) => {
+    setDraggingEvent(event);
+    e.dataTransfer.effectAllowed = "move";
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = "0.5";
+    }
+  };
+
+  const handleDragEnd = (e: React.DragEvent) => {
+    setDraggingEvent(null);
+    setDragOverDay(null);
+    if (e.currentTarget instanceof HTMLElement) {
+      e.currentTarget.style.opacity = "1";
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent, dayIndex: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverDay(dayIndex);
+  };
+
+  const handleDragLeave = () => {
+    setDragOverDay(null);
+  };
+
+  const handleDrop = async (e: React.DragEvent, targetDay: Dayjs) => {
+    e.preventDefault();
+    setDragOverDay(null);
+
+    if (!draggingEvent) return;
+
+    const newDateStr = targetDay.format("YYYY-MM-DD");
+    const oldDateStr = draggingEvent.date.format("YYYY-MM-DD");
+
+    if (newDateStr === oldDateStr) {
+      setDraggingEvent(null);
+      return;
+    }
+
+    const newDayOfWeek = targetDay.day() === 0 ? 8 : targetDay.day() + 1;
+    const oldDayOfWeek = draggingEvent.schedule["Thứ"];
+
+    try {
+      const timetableData: Omit<TimetableEntry, "id"> = {
+        "Class ID": draggingEvent.class.id,
+        "Mã lớp": draggingEvent.class["Mã lớp"] || "",
+        "Tên lớp": draggingEvent.class["Tên lớp"] || "",
+        "Ngày": newDateStr,
+        "Thứ": newDayOfWeek,
+        "Giờ bắt đầu": draggingEvent.schedule["Giờ bắt đầu"],
+        "Giờ kết thúc": draggingEvent.schedule["Giờ kết thúc"],
+        "Phòng học": draggingEvent.class["Phòng học"] || "",
+      };
+
+      if (!draggingEvent.isCustomSchedule) {
+        (timetableData as any)["Thay thế ngày"] = oldDateStr;
+        (timetableData as any)["Thay thế thứ"] = oldDayOfWeek;
+      }
+
+      if (draggingEvent.scheduleId) {
+        const existingEntry = Array.from(timetableEntries.values()).find(
+          entry => entry.id === draggingEvent.scheduleId
+        );
+        if (existingEntry && existingEntry["Thay thế ngày"]) {
+          (timetableData as any)["Thay thế ngày"] = existingEntry["Thay thế ngày"];
+          (timetableData as any)["Thay thế thứ"] = existingEntry["Thay thế thứ"];
+        }
+
+        const oldEntryRef = ref(database, `datasheet/Thời_khoá_biểu/${draggingEvent.scheduleId}`);
+        await remove(oldEntryRef);
+
+        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+        const newEntryRef = push(timetableRef);
+        await set(newEntryRef, timetableData);
+      } else {
+        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+        const newEntryRef = push(timetableRef);
+        await set(newEntryRef, timetableData);
+      }
+
+      message.success(`Đã di chuyển lịch từ ${oldDateStr} sang ${newDateStr}`);
+    } catch (error) {
+      console.error("Error moving schedule:", error);
+      message.error("Có lỗi xảy ra khi di chuyển lịch học");
+    }
+
+    setDraggingEvent(null);
+  };
+
+  // ===== EDIT SCHEDULE HANDLERS =====
+  const handleEditSchedule = (event: ScheduleEvent, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingEvent(event);
+    editForm.setFieldsValue({
+      "Ngày": event.date,
+      "Giờ bắt đầu": dayjs(event.schedule["Giờ bắt đầu"], "HH:mm"),
+      "Giờ kết thúc": dayjs(event.schedule["Giờ kết thúc"], "HH:mm"),
+    });
+    setIsEditModalOpen(true);
+  };
+
+  const handleSaveSchedule = async () => {
+    if (!editingEvent) return;
+
+    try {
+      const values = await editForm.validateFields();
+      const newDateStr = values["Ngày"].format("YYYY-MM-DD");
+      const newDayOfWeek = values["Ngày"].day() === 0 ? 8 : values["Ngày"].day() + 1;
+      const oldDateStr = editingEvent.date.format("YYYY-MM-DD");
+      const oldDayOfWeek = editingEvent.schedule["Thứ"];
+
+      const timetableData: Omit<TimetableEntry, "id"> = {
+        "Class ID": editingEvent.class.id,
+        "Mã lớp": editingEvent.class["Mã lớp"] || "",
+        "Tên lớp": editingEvent.class["Tên lớp"] || "",
+        "Ngày": newDateStr,
+        "Thứ": newDayOfWeek,
+        "Giờ bắt đầu": values["Giờ bắt đầu"].format("HH:mm"),
+        "Giờ kết thúc": values["Giờ kết thúc"].format("HH:mm"),
+        "Phòng học": editingEvent.class["Phòng học"] || "",
+      };
+
+      // Nếu đổi ngày và đây là lịch mặc định, thêm thông tin ngày gốc bị thay thế
+      if (newDateStr !== oldDateStr && !editingEvent.isCustomSchedule) {
+        (timetableData as any)["Thay thế ngày"] = oldDateStr;
+        (timetableData as any)["Thay thế thứ"] = oldDayOfWeek;
+      }
+
+      if (editingEvent.scheduleId) {
+        // Đang sửa lịch bù hiện có
+        if (newDateStr === oldDateStr) {
+          // Chỉ đổi giờ - update tại chỗ
+          const existingRef = ref(database, `datasheet/Thời_khoá_biểu/${editingEvent.scheduleId}`);
+          await update(existingRef, timetableData);
+        } else {
+          // Đổi ngày - giữ lại thông tin thay thế cũ
+          const existingEntry = Array.from(timetableEntries.values()).find(
+            entry => entry.id === editingEvent.scheduleId
+          );
+          if (existingEntry && existingEntry["Thay thế ngày"]) {
+            (timetableData as any)["Thay thế ngày"] = existingEntry["Thay thế ngày"];
+            (timetableData as any)["Thay thế thứ"] = existingEntry["Thay thế thứ"];
+          }
+          
+          const oldEntryRef = ref(database, `datasheet/Thời_khoá_biểu/${editingEvent.scheduleId}`);
+          await remove(oldEntryRef);
+
+          const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+          const newEntryRef = push(timetableRef);
+          await set(newEntryRef, timetableData);
+        }
+        message.success("Đã cập nhật lịch dạy");
+      } else {
+        // Tạo lịch bù mới
+        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+        const newEntryRef = push(timetableRef);
+        await set(newEntryRef, timetableData);
+        message.success("Đã tạo lịch dạy mới");
+      }
+
+      setIsEditModalOpen(false);
+      setEditingEvent(null);
+      editForm.resetFields();
+    } catch (error) {
+      console.error("Error saving schedule:", error);
+      message.error("Có lỗi xảy ra khi lưu lịch dạy");
+    }
+  };
+
+  const handleDeleteSchedule = async () => {
+    if (!editingEvent || !editingEvent.scheduleId) {
+      message.warning("Không thể xóa lịch mặc định");
+      return;
+    }
+
+    try {
+      const entryRef = ref(database, `datasheet/Thời_khoá_biểu/${editingEvent.scheduleId}`);
+      await remove(entryRef);
+      message.success("Đã xóa lịch học bù");
+      setIsEditModalOpen(false);
+      setEditingEvent(null);
+      editForm.resetFields();
+    } catch (error) {
+      console.error("Error deleting schedule:", error);
+      message.error("Có lỗi xảy ra khi xóa lịch học");
+    }
   };
 
   if (myClasses.length === 0)
@@ -494,6 +769,7 @@ const TeacherSchedule = () => {
                 const dayEvents = weekEvents.filter((e) =>
                   e.date.isSame(day, "day")
                 );
+                const isDragOver = dragOverDay === dayIndex;
 
                 return (
                   <div
@@ -502,8 +778,15 @@ const TeacherSchedule = () => {
                       flex: 1,
                       borderRight: dayIndex < 6 ? "1px solid #f0f0f0" : "none",
                       position: "relative",
-                      backgroundColor: isToday(day) ? "#f6ffed" : "white",
+                      backgroundColor: isDragOver 
+                        ? "#bae7ff" 
+                        : isToday(day) ? "#f6ffed" : "white",
+                      transition: "background-color 0.2s",
+                      outline: isDragOver ? "2px dashed #1890ff" : "none",
                     }}
+                    onDragOver={(e) => handleDragOver(e, dayIndex)}
+                    onDragLeave={handleDragLeave}
+                    onDrop={(e) => handleDrop(e, day)}
                   >
                     {/* Day Header */}
                     <div
@@ -556,48 +839,78 @@ const TeacherSchedule = () => {
                       
                       const widthPercent = 100 / event.totalColumns;
                       const leftPercent = (event.column * widthPercent);
+                      const isDragging = draggingEvent?.class.id === event.class.id && 
+                                         draggingEvent?.date.isSame(event.date, "day");
 
                       return (
                         <div
                           key={idx}
-                          onClick={() =>
-                            navigate(
-                              `/workspace/attendance/session/${event.class.id}`,
-                              {
-                                state: {
-                                  classData: event.class,
-                                  date: event.date.format("YYYY-MM-DD"),
-                                },
-                              }
-                            )
-                          }
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, event)}
+                          onDragEnd={handleDragEnd}
                           style={{
                             position: "absolute",
                             top: `${60 + topOffset}px`,
                             left: `${leftPercent}%`,
                             width: `${widthPercent - 1}%`,
                             height: `${height - 4}px`,
-                            backgroundColor: "#e6f7ff",
-                            border: "1px solid #69c0ff",
-                            borderLeft: "3px solid #1890ff",
+                            backgroundColor: event.isCustomSchedule ? "#fff7e6" : "#e6f7ff",
+                            border: `1px solid ${event.isCustomSchedule ? "#ffa940" : "#69c0ff"}`,
+                            borderLeft: `3px solid ${event.isCustomSchedule ? "#fa8c16" : "#1890ff"}`,
                             borderRadius: "4px",
                             padding: "4px 6px",
-                            cursor: "pointer",
+                            cursor: "grab",
                             overflow: "hidden",
                             transition: "all 0.2s",
                             zIndex: 1,
+                            opacity: isDragging ? 0.5 : 1,
                           }}
                           onMouseEnter={(e) => {
-                            e.currentTarget.style.backgroundColor = "#bae7ff";
+                            e.currentTarget.style.backgroundColor = event.isCustomSchedule ? "#ffd591" : "#bae7ff";
                             e.currentTarget.style.zIndex = "10";
                             e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
                           }}
                           onMouseLeave={(e) => {
-                            e.currentTarget.style.backgroundColor = "#e6f7ff";
+                            e.currentTarget.style.backgroundColor = event.isCustomSchedule ? "#fff7e6" : "#e6f7ff";
                             e.currentTarget.style.zIndex = "1";
                             e.currentTarget.style.boxShadow = "none";
                           }}
                         >
+                          {/* Edit Button */}
+                          <Button
+                            type="text"
+                            size="small"
+                            icon={<EditOutlined />}
+                            onClick={(e) => handleEditSchedule(event, e)}
+                            style={{
+                              position: "absolute",
+                              top: "2px",
+                              right: "2px",
+                              padding: "0 4px",
+                              height: "16px",
+                              fontSize: "10px",
+                              zIndex: 2,
+                            }}
+                            title="Sửa lịch"
+                          />
+                          
+                          {/* Custom schedule indicator */}
+                          {event.isCustomSchedule && (
+                            <Tag 
+                              color="orange" 
+                              style={{ 
+                                position: "absolute", 
+                                bottom: "2px", 
+                                right: "2px", 
+                                fontSize: "8px",
+                                padding: "0 4px",
+                                margin: 0,
+                              }}
+                            >
+                              Bù
+                            </Tag>
+                          )}
+                          
                           <div
                             style={{
                               fontWeight: "bold",
@@ -606,7 +919,19 @@ const TeacherSchedule = () => {
                               whiteSpace: "nowrap",
                               overflow: "hidden",
                               textOverflow: "ellipsis",
+                              paddingRight: "20px",
                             }}
+                            onClick={() =>
+                              navigate(
+                                `/workspace/attendance/session/${event.class.id}`,
+                                {
+                                  state: {
+                                    classData: event.class,
+                                    date: event.date.format("YYYY-MM-DD"),
+                                  },
+                                }
+                              )
+                            }
                           >
                             {event.class["Tên lớp"]}
                           </div>
@@ -654,6 +979,64 @@ const TeacherSchedule = () => {
           </div>
         </div>
       </div>
+
+      {/* Edit Schedule Modal */}
+      <Modal
+        title={`Chỉnh sửa lịch dạy - ${editingEvent?.class["Tên lớp"] || ""}`}
+        open={isEditModalOpen}
+        onCancel={() => {
+          setIsEditModalOpen(false);
+          setEditingEvent(null);
+          editForm.resetFields();
+        }}
+        footer={[
+          editingEvent?.scheduleId && (
+            <Button key="delete" danger onClick={handleDeleteSchedule}>
+              Xóa lịch bù
+            </Button>
+          ),
+          <Button key="cancel" onClick={() => {
+            setIsEditModalOpen(false);
+            setEditingEvent(null);
+            editForm.resetFields();
+          }}>
+            Hủy
+          </Button>,
+          <Button key="save" type="primary" onClick={handleSaveSchedule}>
+            Lưu
+          </Button>,
+        ]}
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item
+            name="Ngày"
+            label="Ngày"
+            rules={[{ required: true, message: "Vui lòng chọn ngày" }]}
+          >
+            <DatePicker format="DD/MM/YYYY" style={{ width: "100%" }} />
+          </Form.Item>
+          
+          <Space style={{ width: "100%" }}>
+            <Form.Item
+              name="Giờ bắt đầu"
+              label="Giờ bắt đầu"
+              rules={[{ required: true, message: "Vui lòng chọn giờ bắt đầu" }]}
+              style={{ flex: 1 }}
+            >
+              <TimePicker format="HH:mm" style={{ width: "100%" }} />
+            </Form.Item>
+            
+            <Form.Item
+              name="Giờ kết thúc"
+              label="Giờ kết thúc"
+              rules={[{ required: true, message: "Vui lòng chọn giờ kết thúc" }]}
+              style={{ flex: 1 }}
+            >
+              <TimePicker format="HH:mm" style={{ width: "100%" }} />
+            </Form.Item>
+          </Space>
+        </Form>
+      </Modal>
     </WrapperContent>
   );
 };
