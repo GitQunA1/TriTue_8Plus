@@ -68,11 +68,16 @@ interface TimetableEntry {
 
 type FilterMode = "class" | "subject" | "teacher" | "location";
 
-const TIME_SLOTS = [
-  { label: "Sáng", start: "06:00", end: "12:00" },
-  { label: "Chiều", start: "12:00", end: "18:00" },
-  { label: "Tối", start: "18:00", end: "23:59" },
-];
+// Generate hourly time slots from 6:00 to 22:00
+const HOUR_SLOTS = Array.from({ length: 17 }, (_, i) => {
+  const hour = i + 6;
+  return {
+    hour,
+    label: `${hour.toString().padStart(2, '0')}:00`,
+    start: `${hour.toString().padStart(2, '0')}:00`,
+    end: `${(hour + 1).toString().padStart(2, '0')}:00`,
+  };
+});
 
 const AdminSchedule = () => {
   const { classes, loading } = useClasses();
@@ -88,10 +93,17 @@ const AdminSchedule = () => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<ScheduleEvent | null>(null);
   const [editForm] = Form.useForm();
-  const [inlineEditing, setInlineEditing] = useState<{eventKey: string, event: ScheduleEvent} | null>(null);
-  const [inlineForm] = Form.useForm();
   const [draggingEvent, setDraggingEvent] = useState<ScheduleEvent | null>(null);
   const [dragOverCell, setDragOverCell] = useState<string | null>(null); // "dayIndex_slotIndex"
+  
+  // State cho modal xác nhận loại sửa đổi
+  const [confirmModalVisible, setConfirmModalVisible] = useState(false);
+  const [confirmModalType, setConfirmModalType] = useState<'edit' | 'drag'>('edit');
+  const [pendingAction, setPendingAction] = useState<{
+    event: ScheduleEvent;
+    targetDate?: Dayjs; // Chỉ dùng cho drag
+    newValues?: any; // Chỉ dùng cho edit
+  } | null>(null);
 
   // Load rooms
   useEffect(() => {
@@ -283,6 +295,128 @@ const AdminSchedule = () => {
     }
   });
 
+  // Get all events for a specific date
+  const getEventsForDate = (date: Dayjs): ScheduleEvent[] => {
+    const events: ScheduleEvent[] = [];
+    const dayOfWeek = date.day() === 0 ? 8 : date.day() + 1;
+    const dateStr = date.format("YYYY-MM-DD");
+
+    filteredClasses.forEach((classData) => {
+      // First, check if there's a custom schedule in Thời_khoá_biểu
+      const timetableKey = `${classData.id}_${dateStr}_${dayOfWeek}`;
+      const customSchedule = timetableEntries.get(timetableKey);
+
+      if (customSchedule) {
+        events.push({
+          class: classData,
+          schedule: {
+            "Thứ": customSchedule["Thứ"],
+            "Giờ bắt đầu": customSchedule["Giờ bắt đầu"],
+            "Giờ kết thúc": customSchedule["Giờ kết thúc"],
+          },
+          date: dateStr,
+          scheduleId: customSchedule.id,
+          isCustomSchedule: true,
+        });
+      } else {
+        // Check if this date has been replaced by a custom schedule (moved to another day)
+        if (isDateReplacedByCustomSchedule(classData.id, dateStr, dayOfWeek)) {
+          return;
+        }
+
+        // Fallback to class schedule
+        if (!classData["Lịch học"] || classData["Lịch học"].length === 0) {
+          return;
+        }
+
+        classData["Lịch học"].filter((s) => s && s["Thứ"] === dayOfWeek).forEach((schedule) => {
+          events.push({ class: classData, schedule, date: dateStr, isCustomSchedule: false });
+        });
+      }
+    });
+
+    return events;
+  };
+
+  // Helper to calculate event position and height based on time
+  const getEventStyle = (event: ScheduleEvent) => {
+    const startTime = event.schedule["Giờ bắt đầu"];
+    const endTime = event.schedule["Giờ kết thúc"];
+    
+    if (!startTime || !endTime) return { top: 0, height: 60 };
+    
+    const [startHour, startMin] = startTime.split(':').map(Number);
+    const [endHour, endMin] = endTime.split(':').map(Number);
+    
+    // Calculate position from 6:00 (first hour slot)
+    const startOffset = (startHour - 6) * 60 + startMin;
+    const endOffset = (endHour - 6) * 60 + endMin;
+    const duration = endOffset - startOffset;
+    
+    // Each hour = 60px
+    const top = startOffset;
+    const height = Math.max(duration, 30); // minimum 30px height
+    
+    return { top, height };
+  };
+
+  // Group overlapping events for positioning
+  const groupOverlappingEvents = (events: ScheduleEvent[]) => {
+    if (events.length === 0) return [];
+    
+    // Sort by start time
+    const sorted = [...events].sort((a, b) => {
+      return a.schedule["Giờ bắt đầu"].localeCompare(b.schedule["Giờ bắt đầu"]);
+    });
+    
+    // Find overlapping groups and assign columns
+    const positioned: { event: ScheduleEvent; column: number; totalColumns: number }[] = [];
+    
+    sorted.forEach((event) => {
+      const eventStart = event.schedule["Giờ bắt đầu"];
+      const eventEnd = event.schedule["Giờ kết thúc"];
+      
+      // Find overlapping events already positioned
+      const overlapping = positioned.filter((p) => {
+        const pStart = p.event.schedule["Giờ bắt đầu"];
+        const pEnd = p.event.schedule["Giờ kết thúc"];
+        return eventStart < pEnd && eventEnd > pStart;
+      });
+      
+      // Find first available column
+      const usedColumns = new Set(overlapping.map(p => p.column));
+      let column = 0;
+      while (usedColumns.has(column)) column++;
+      
+      positioned.push({ event, column, totalColumns: 1 });
+      
+      // Update totalColumns for overlapping events
+      const maxColumn = Math.max(column + 1, ...overlapping.map(p => p.totalColumns));
+      overlapping.forEach(p => p.totalColumns = maxColumn);
+      positioned[positioned.length - 1].totalColumns = maxColumn;
+    });
+    
+    // Final pass to ensure all overlapping events have same totalColumns
+    positioned.forEach((p, i) => {
+      const pStart = p.event.schedule["Giờ bắt đầu"];
+      const pEnd = p.event.schedule["Giờ kết thúc"];
+      
+      positioned.forEach((other, j) => {
+        if (i === j) return;
+        const oStart = other.event.schedule["Giờ bắt đầu"];
+        const oEnd = other.event.schedule["Giờ kết thúc"];
+        
+        if (pStart < oEnd && pEnd > oStart) {
+          const maxCols = Math.max(p.totalColumns, other.totalColumns);
+          p.totalColumns = maxCols;
+          other.totalColumns = maxCols;
+        }
+      });
+    });
+    
+    return positioned;
+  };
+
   const getEventsForDateAndSlot = (
     date: Dayjs,
     slotStart: string,
@@ -382,18 +516,90 @@ const AdminSchedule = () => {
     setIsEditModalOpen(true);
   };
 
-  const handleSaveSchedule = async () => {
+  // Hiển thị modal xác nhận khi người dùng nhấn Lưu
+  const handleSaveScheduleClick = async () => {
     if (!editingEvent) return;
-
+    
     try {
       const values = await editForm.validateFields();
-      const dateStr = editingEvent.date;
+      
+      // Nếu đây là lịch bù (có scheduleId), update trực tiếp không cần hỏi
+      if (editingEvent.isCustomSchedule && editingEvent.scheduleId) {
+        await saveScheduleThisDateOnly(editingEvent, values);
+        return;
+      }
+      
+      // Nếu là lịch mặc định, hỏi người dùng muốn sửa tất cả hay chỉ ngày này
+      setPendingAction({ event: editingEvent, newValues: values });
+      setConfirmModalType('edit');
+      setConfirmModalVisible(true);
+    } catch (error) {
+      console.error("Validation error:", error);
+    }
+  };
+
+  // Lưu lịch cho tất cả các tuần (cập nhật lịch gốc của lớp)
+  const saveScheduleAllWeeks = async (event: ScheduleEvent, values: any) => {
+    try {
+      const classRef = ref(database, `datasheet/Lớp_học/${event.class.id}`);
+      const currentSchedules = event.class["Lịch học"] || [];
+      const dayOfWeek = event.schedule["Thứ"];
+      
+      // Cập nhật lịch học trong mảng Lịch học của lớp
+      const updatedSchedules = currentSchedules.map((s: any) => {
+        if (s["Thứ"] === dayOfWeek && 
+            s["Giờ bắt đầu"] === event.schedule["Giờ bắt đầu"] &&
+            s["Giờ kết thúc"] === event.schedule["Giờ kết thúc"]) {
+          return {
+            "Thứ": dayOfWeek,
+            "Giờ bắt đầu": values["Giờ bắt đầu"].format("HH:mm"),
+            "Giờ kết thúc": values["Giờ kết thúc"].format("HH:mm"),
+          };
+        }
+        return s;
+      });
+      
+      // Cập nhật phòng học nếu có thay đổi
+      const updateData: any = { "Lịch học": updatedSchedules };
+      if (values["Phòng học"]) {
+        updateData["Phòng học"] = values["Phòng học"];
+      }
+      
+      await update(classRef, updateData);
+      
+      // Xóa tất cả các lịch bù cùng thứ của lớp này (vì đã cập nhật lịch gốc)
+      const entriesToDelete: string[] = [];
+      timetableEntries.forEach((entry, key) => {
+        if (entry["Class ID"] === event.class.id && entry["Thứ"] === dayOfWeek) {
+          entriesToDelete.push(entry.id);
+        }
+      });
+      
+      for (const entryId of entriesToDelete) {
+        const entryRef = ref(database, `datasheet/Thời_khoá_biểu/${entryId}`);
+        await remove(entryRef);
+      }
+      
+      message.success("Đã cập nhật lịch cho tất cả các tuần");
+      setIsEditModalOpen(false);
+      setEditingEvent(null);
+      editForm.resetFields();
+    } catch (error) {
+      console.error("Error saving schedule for all weeks:", error);
+      message.error("Có lỗi xảy ra khi lưu lịch học");
+    }
+  };
+
+  // Lưu lịch chỉ cho ngày này (tạo/cập nhật lịch bù)
+  const saveScheduleThisDateOnly = async (event: ScheduleEvent, values: any) => {
+    try {
+      const dateStr = event.date;
       const dayOfWeek = dayjs(dateStr).day() === 0 ? 8 : dayjs(dateStr).day() + 1;
 
       const timetableData: Omit<TimetableEntry, "id"> = {
-        "Class ID": editingEvent.class.id,
-        "Mã lớp": editingEvent.class["Mã lớp"] || "",
-        "Tên lớp": editingEvent.class["Tên lớp"] || "",
+        "Class ID": event.class.id,
+        "Mã lớp": event.class["Mã lớp"] || "",
+        "Tên lớp": event.class["Tên lớp"] || "",
         "Ngày": dateStr,
         "Thứ": dayOfWeek,
         "Giờ bắt đầu": values["Giờ bắt đầu"].format("HH:mm"),
@@ -402,9 +608,9 @@ const AdminSchedule = () => {
         "Ghi chú": values["Ghi chú"] || "",
       };
 
-      // Nếu đang sửa lịch bù hiện có (có scheduleId), update trực tiếp entry đó
-      if (editingEvent.scheduleId) {
-        const entryRef = ref(database, `datasheet/Thời_khoá_biểu/${editingEvent.scheduleId}`);
+      if (event.scheduleId) {
+        // Cập nhật lịch bù hiện có
+        const entryRef = ref(database, `datasheet/Thời_khoá_biểu/${event.scheduleId}`);
         await set(entryRef, timetableData);
         message.success("Đã cập nhật lịch học bù");
       } else {
@@ -412,7 +618,7 @@ const AdminSchedule = () => {
         const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
         const newEntryRef = push(timetableRef);
         await set(newEntryRef, timetableData);
-        message.success("Đã tạo lịch học bù mới");
+        message.success("Đã tạo lịch học bù cho ngày này");
       }
 
       setIsEditModalOpen(false);
@@ -422,6 +628,132 @@ const AdminSchedule = () => {
       console.error("Error saving schedule:", error);
       message.error("Có lỗi xảy ra khi lưu lịch học");
     }
+  };
+
+  // Xử lý khi người dùng xác nhận loại sửa đổi
+  const handleConfirmAction = async (updateAll: boolean) => {
+    setConfirmModalVisible(false);
+    
+    if (!pendingAction) return;
+    
+    if (confirmModalType === 'edit') {
+      if (updateAll) {
+        await saveScheduleAllWeeks(pendingAction.event, pendingAction.newValues);
+      } else {
+        await saveScheduleThisDateOnly(pendingAction.event, pendingAction.newValues);
+      }
+    } else if (confirmModalType === 'drag' && pendingAction.targetDate) {
+      if (updateAll) {
+        await moveScheduleAllWeeks(pendingAction.event, pendingAction.targetDate);
+      } else {
+        await moveScheduleThisDateOnly(pendingAction.event, pendingAction.targetDate);
+      }
+    }
+    
+    setPendingAction(null);
+  };
+
+  // Di chuyển lịch cho tất cả các tuần (cập nhật thứ trong lịch gốc)
+  const moveScheduleAllWeeks = async (event: ScheduleEvent, targetDate: Dayjs) => {
+    try {
+      const newDayOfWeek = targetDate.day() === 0 ? 8 : targetDate.day() + 1;
+      const oldDayOfWeek = event.schedule["Thứ"];
+      
+      const classRef = ref(database, `datasheet/Lớp_học/${event.class.id}`);
+      const currentSchedules = event.class["Lịch học"] || [];
+      
+      // Cập nhật thứ trong lịch học của lớp
+      const updatedSchedules = currentSchedules.map((s: any) => {
+        if (s["Thứ"] === oldDayOfWeek && 
+            s["Giờ bắt đầu"] === event.schedule["Giờ bắt đầu"] &&
+            s["Giờ kết thúc"] === event.schedule["Giờ kết thúc"]) {
+          return {
+            ...s,
+            "Thứ": newDayOfWeek,
+          };
+        }
+        return s;
+      });
+      
+      await update(classRef, { "Lịch học": updatedSchedules });
+      
+      // Xóa tất cả các lịch bù liên quan đến thứ cũ của lớp này
+      const entriesToDelete: string[] = [];
+      timetableEntries.forEach((entry) => {
+        if (entry["Class ID"] === event.class.id && 
+            (entry["Thứ"] === oldDayOfWeek || entry["Thay thế thứ"] === oldDayOfWeek)) {
+          entriesToDelete.push(entry.id);
+        }
+      });
+      
+      for (const entryId of entriesToDelete) {
+        const entryRef = ref(database, `datasheet/Thời_khoá_biểu/${entryId}`);
+        await remove(entryRef);
+      }
+      
+      const oldDayName = ["", "", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"][oldDayOfWeek];
+      const newDayName = ["", "", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"][newDayOfWeek];
+      message.success(`Đã đổi lịch từ ${oldDayName} sang ${newDayName} cho tất cả các tuần`);
+    } catch (error) {
+      console.error("Error moving schedule for all weeks:", error);
+      message.error("Có lỗi xảy ra khi di chuyển lịch");
+    }
+  };
+
+  // Di chuyển lịch chỉ cho ngày này (tạo lịch bù)
+  const moveScheduleThisDateOnly = async (event: ScheduleEvent, targetDate: Dayjs) => {
+    const newDateStr = targetDate.format("YYYY-MM-DD");
+    const oldDateStr = event.date;
+    const newDayOfWeek = targetDate.day() === 0 ? 8 : targetDate.day() + 1;
+    const oldDayOfWeek = event.schedule["Thứ"];
+
+    try {
+      const timetableData: Omit<TimetableEntry, "id"> = {
+        "Class ID": event.class.id,
+        "Mã lớp": event.class["Mã lớp"] || "",
+        "Tên lớp": event.class["Tên lớp"] || "",
+        "Ngày": newDateStr,
+        "Thứ": newDayOfWeek,
+        "Giờ bắt đầu": event.schedule["Giờ bắt đầu"],
+        "Giờ kết thúc": event.schedule["Giờ kết thúc"],
+        "Phòng học": event.class["Phòng học"] || "",
+      };
+
+      // Thêm thông tin ngày gốc bị thay thế
+      if (!event.isCustomSchedule) {
+        (timetableData as any)["Thay thế ngày"] = oldDateStr;
+        (timetableData as any)["Thay thế thứ"] = oldDayOfWeek;
+      }
+
+      if (event.scheduleId) {
+        // Lấy thông tin thay thế cũ nếu có
+        const existingEntry = Array.from(timetableEntries.values()).find(
+          entry => entry.id === event.scheduleId
+        );
+        if (existingEntry && existingEntry["Thay thế ngày"]) {
+          (timetableData as any)["Thay thế ngày"] = existingEntry["Thay thế ngày"];
+          (timetableData as any)["Thay thế thứ"] = existingEntry["Thay thế thứ"];
+        }
+
+        // Xóa entry cũ và tạo mới
+        const oldEntryRef = ref(database, `datasheet/Thời_khoá_biểu/${event.scheduleId}`);
+        await remove(oldEntryRef);
+      }
+
+      const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+      const newEntryRef = push(timetableRef);
+      await set(newEntryRef, timetableData);
+
+      message.success(`Đã di chuyển lịch từ ${oldDateStr} sang ${newDateStr}`);
+    } catch (error) {
+      console.error("Error moving schedule:", error);
+      message.error("Có lỗi xảy ra khi di chuyển lịch học");
+    }
+  };
+
+  const handleSaveSchedule = async () => {
+    // Giữ lại hàm cũ cho backward compatibility, nhưng gọi hàm mới
+    handleSaveScheduleClick();
   };
 
   const handleDeleteSchedule = async () => {
@@ -438,89 +770,6 @@ const AdminSchedule = () => {
       console.error("Error deleting schedule:", error);
       message.error("Có lỗi xảy ra khi xóa lịch học");
     }
-  };
-
-  const handleInlineEdit = (event: ScheduleEvent, e: React.MouseEvent) => {
-    e.stopPropagation();
-    const eventKey = `${event.class.id}_${event.date}_${event.schedule["Thứ"]}`;
-    setInlineEditing({ eventKey, event });
-    inlineForm.setFieldsValue({
-      "Ngày": dayjs(event.date),
-      "Giờ bắt đầu": event.schedule["Giờ bắt đầu"] ? dayjs(event.schedule["Giờ bắt đầu"], "HH:mm") : null,
-      "Giờ kết thúc": event.schedule["Giờ kết thúc"] ? dayjs(event.schedule["Giờ kết thúc"], "HH:mm") : null,
-    });
-  };
-
-  const handleInlineSave = async () => {
-    if (!inlineEditing) return;
-
-    try {
-      const values = await inlineForm.validateFields();
-      const newDate = values["Ngày"].format("YYYY-MM-DD");
-      const dayOfWeek = values["Ngày"].day() === 0 ? 8 : values["Ngày"].day() + 1;
-      const oldDate = inlineEditing.event.date;
-      const oldDayOfWeek = inlineEditing.event.schedule["Thứ"];
-
-      // Chuẩn bị dữ liệu cập nhật
-      const timetableData: Omit<TimetableEntry, "id"> = {
-        "Class ID": inlineEditing.event.class.id,
-        "Mã lớp": inlineEditing.event.class["Mã lớp"] || "",
-        "Tên lớp": inlineEditing.event.class["Tên lớp"] || "",
-        "Ngày": newDate,
-        "Thứ": dayOfWeek,
-        "Giờ bắt đầu": values["Giờ bắt đầu"].format("HH:mm"),
-        "Giờ kết thúc": values["Giờ kết thúc"].format("HH:mm"),
-        "Phòng học": inlineEditing.event.class["Phòng học"] || "",
-      };
-
-      // Nếu đổi ngày và đây là lịch mặc định (không phải lịch bù), 
-      // thêm thông tin ngày gốc bị thay thế
-      if (newDate !== oldDate && !inlineEditing.event.isCustomSchedule) {
-        (timetableData as any)["Thay thế ngày"] = oldDate;
-        (timetableData as any)["Thay thế thứ"] = oldDayOfWeek;
-      }
-
-      // Nếu có scheduleId (lịch học bù đang sửa) và ngày không đổi -> cập nhật tại chỗ
-      if (inlineEditing.event.scheduleId && newDate === oldDate) {
-        const existingRef = ref(database, `datasheet/Thời_khoá_biểu/${inlineEditing.event.scheduleId}`);
-        await update(existingRef, timetableData);
-        message.success("Đã cập nhật lịch học bù");
-      } else if (inlineEditing.event.scheduleId) {
-        // Có scheduleId nhưng ngày đổi -> xóa entry cũ và tạo mới (giữ lại thông tin thay thế nếu có)
-        const oldEntryRef = ref(database, `datasheet/Thời_khoá_biểu/${inlineEditing.event.scheduleId}`);
-        
-        // Lấy thông tin thay thế cũ nếu có
-        const oldEntry = timetableEntries.get(`${inlineEditing.event.class.id}_${oldDate}_${oldDayOfWeek}`);
-        if (oldEntry && oldEntry["Thay thế ngày"]) {
-          (timetableData as any)["Thay thế ngày"] = oldEntry["Thay thế ngày"];
-          (timetableData as any)["Thay thế thứ"] = oldEntry["Thay thế thứ"];
-        }
-        
-        await remove(oldEntryRef);
-        
-        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
-        const newEntryRef = push(timetableRef);
-        await set(newEntryRef, timetableData);
-        message.success("Đã cập nhật lịch học bù (đổi ngày)");
-      } else {
-        // Không có scheduleId -> tạo mới
-        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
-        const newEntryRef = push(timetableRef);
-        await set(newEntryRef, timetableData);
-        message.success("Đã tạo lịch học bù mới");
-      }
-
-      setInlineEditing(null);
-      inlineForm.resetFields();
-    } catch (error) {
-      console.error("Error saving inline schedule:", error);
-      message.error("Có lỗi xảy ra khi lưu lịch học");
-    }
-  };
-
-  const handleInlineCancel = () => {
-    setInlineEditing(null);
-    inlineForm.resetFields();
   };
 
   // ===== DRAG & DROP HANDLERS =====
@@ -573,59 +822,17 @@ const AdminSchedule = () => {
       return;
     }
 
-    const newDayOfWeek = targetDate.day() === 0 ? 8 : targetDate.day() + 1;
-    const oldDayOfWeek = draggingEvent.schedule["Thứ"];
-
-    try {
-      // Chuẩn bị dữ liệu - giữ nguyên giờ, chỉ đổi ngày
-      const timetableData: Omit<TimetableEntry, "id"> = {
-        "Class ID": draggingEvent.class.id,
-        "Mã lớp": draggingEvent.class["Mã lớp"] || "",
-        "Tên lớp": draggingEvent.class["Tên lớp"] || "",
-        "Ngày": newDateStr,
-        "Thứ": newDayOfWeek,
-        "Giờ bắt đầu": draggingEvent.schedule["Giờ bắt đầu"],
-        "Giờ kết thúc": draggingEvent.schedule["Giờ kết thúc"],
-        "Phòng học": draggingEvent.class["Phòng học"] || "",
-      };
-
-      // Nếu đây là lịch mặc định (không phải lịch bù), thêm thông tin ngày gốc bị thay thế
-      if (!draggingEvent.isCustomSchedule) {
-        (timetableData as any)["Thay thế ngày"] = oldDateStr;
-        (timetableData as any)["Thay thế thứ"] = oldDayOfWeek;
-      }
-
-      if (draggingEvent.scheduleId) {
-        // Đang kéo lịch bù - cập nhật hoặc tạo mới tùy vào có thay đổi ngày
-        // Lấy thông tin thay thế cũ nếu có
-        const existingEntry = Array.from(timetableEntries.values()).find(
-          entry => entry.id === draggingEvent.scheduleId
-        );
-        if (existingEntry && existingEntry["Thay thế ngày"]) {
-          (timetableData as any)["Thay thế ngày"] = existingEntry["Thay thế ngày"];
-          (timetableData as any)["Thay thế thứ"] = existingEntry["Thay thế thứ"];
-        }
-
-        // Xóa entry cũ và tạo mới (vì key trong map thay đổi khi đổi ngày)
-        const oldEntryRef = ref(database, `datasheet/Thời_khoá_biểu/${draggingEvent.scheduleId}`);
-        await remove(oldEntryRef);
-
-        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
-        const newEntryRef = push(timetableRef);
-        await set(newEntryRef, timetableData);
-      } else {
-        // Đang kéo lịch mặc định - tạo lịch bù mới
-        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
-        const newEntryRef = push(timetableRef);
-        await set(newEntryRef, timetableData);
-      }
-
-      message.success(`Đã di chuyển lịch từ ${oldDateStr} sang ${newDateStr}`);
-    } catch (error) {
-      console.error("Error moving schedule:", error);
-      message.error("Có lỗi xảy ra khi di chuyển lịch học");
+    // Nếu đây là lịch bù (có scheduleId), di chuyển trực tiếp không cần hỏi
+    if (draggingEvent.isCustomSchedule && draggingEvent.scheduleId) {
+      await moveScheduleThisDateOnly(draggingEvent, targetDate);
+      setDraggingEvent(null);
+      return;
     }
 
+    // Nếu là lịch mặc định, hỏi người dùng muốn di chuyển tất cả hay chỉ ngày này
+    setPendingAction({ event: draggingEvent, targetDate });
+    setConfirmModalType('drag');
+    setConfirmModalVisible(true);
     setDraggingEvent(null);
   };
 
@@ -773,392 +980,366 @@ const AdminSchedule = () => {
             </div>
           </Card>
 
-          {/* Schedule Table */}
-          <div style={{ flex: 1, overflowX: "auto" }}>
-            <table
-              style={{
-                width: "100%",
-                borderCollapse: "collapse",
-                backgroundColor: "white",
-              }}
-            >
-              <thead>
-                <tr>
-                  <th
+          {/* Schedule Grid - Hourly View */}
+          <div style={{ flex: 1, overflow: "auto", backgroundColor: "white", border: "1px solid #f0f0f0", borderRadius: "8px" }}>
+            <div style={{ display: "flex", minWidth: "fit-content" }}>
+              {/* Time Column */}
+              <div style={{ width: "60px", flexShrink: 0, borderRight: "1px solid #f0f0f0", backgroundColor: "#fafafa" }}>
+                {/* Empty header cell */}
+                <div style={{ 
+                  height: "60px", 
+                  borderBottom: "1px solid #f0f0f0",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: "11px",
+                  color: "#999"
+                }}>
+                  GMT+07
+                </div>
+                {/* Hour labels */}
+                {HOUR_SLOTS.map((slot) => (
+                  <div
+                    key={slot.hour}
                     style={{
-                      border: "1px solid #f0f0f0",
-                      padding: "12px",
-                      backgroundColor: "#fafafa",
-                      width: "100px",
-                      textAlign: "center",
+                      height: "60px",
+                      borderBottom: "1px solid #f0f0f0",
+                      display: "flex",
+                      alignItems: "flex-start",
+                      justifyContent: "flex-end",
+                      paddingRight: "8px",
+                      paddingTop: "4px",
+                      fontSize: "11px",
+                      color: "#666",
                     }}
-                  ></th>
-                  {weekDays.map((day, index) => (
-                    <th
-                      key={index}
+                  >
+                    {slot.label}
+                  </div>
+                ))}
+              </div>
+
+              {/* Day Columns */}
+              {weekDays.map((day, dayIndex) => {
+                const dayEvents = getEventsForDate(day);
+                const positionedEvents = groupOverlappingEvents(dayEvents);
+                const cellKey = `day_${dayIndex}`;
+                const isDragOver = dragOverCell === cellKey;
+
+                return (
+                  <div
+                    key={dayIndex}
+                    style={{
+                      flex: 1,
+                      minWidth: "140px",
+                      borderRight: dayIndex < 6 ? "1px solid #f0f0f0" : "none",
+                      position: "relative",
+                    }}
+                  >
+                    {/* Day Header */}
+                    <div
                       style={{
-                        border: "1px solid #f0f0f0",
-                        padding: "12px",
+                        height: "60px",
+                        borderBottom: "1px solid #f0f0f0",
                         backgroundColor: isToday(day) ? "#e6f7ff" : "#fafafa",
-                        textAlign: "center",
-                        minWidth: "150px",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        position: "sticky",
+                        top: 0,
+                        zIndex: 10,
                       }}
                     >
-                      <div className="capitalize" style={{ fontWeight: "bold" }}>
+                      <div style={{ fontSize: "12px", color: "#666", textTransform: "capitalize" }}>
                         {day.format("dddd")}
                       </div>
-                      <div style={{ fontSize: "12px", color: "#666" }}>
-                        {day.format("DD/MM/YYYY")}
-                      </div>
-                      {isToday(day) && (
-                        <Tag color="blue" style={{ fontSize: "11px", marginTop: "4px" }}>
-                          Hôm nay
-                        </Tag>
-                      )}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {TIME_SLOTS.map((slot, slotIndex) => (
-                  <tr key={slotIndex}>
-                    <td
-                      style={{
-                        border: "1px solid #f0f0f0",
-                        padding: "12px",
-                        backgroundColor: "#fafafa",
+                      <div style={{ 
+                        fontSize: "20px", 
                         fontWeight: "bold",
-                        textAlign: "center",
-                        verticalAlign: "top",
+                        color: isToday(day) ? "#1890ff" : "#333",
+                        width: "36px",
+                        height: "36px",
+                        borderRadius: "50%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: isToday(day) ? "#1890ff" : "transparent",
+                        ...(isToday(day) && { color: "white" })
+                      }}>
+                        {day.format("D")}
+                      </div>
+                    </div>
+
+                    {/* Hour Grid with Events */}
+                    <div
+                      style={{
+                        position: "relative",
+                        height: `${HOUR_SLOTS.length * 60}px`,
+                        backgroundColor: isDragOver ? "#e6f7ff" : isToday(day) ? "#fafffe" : "white",
                       }}
+                      onDragOver={(e) => handleDragOver(e, cellKey)}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDrop(e, day)}
                     >
-                      {slot.label}
-                    </td>
-                    {weekDays.map((day, dayIndex) => {
-                      const events = getEventsForDateAndSlot(
-                        day,
-                        slot.start,
-                        slot.end
-                      );
-                      const cellKey = `${dayIndex}_${slotIndex}`;
-                      const isDragOver = dragOverCell === cellKey;
-                      
-                      return (
-                        <td
-                          key={dayIndex}
+                      {/* Hour lines */}
+                      {HOUR_SLOTS.map((slot, idx) => (
+                        <div
+                          key={slot.hour}
                           style={{
-                            border: "1px solid #f0f0f0",
-                            padding: "8px",
-                            backgroundColor: isDragOver 
-                              ? "#bae7ff" 
-                              : isToday(day) ? "#f6ffed" : "white",
-                            verticalAlign: "top",
-                            minHeight: "120px",
-                            transition: "background-color 0.2s",
-                            outline: isDragOver ? "2px dashed #1890ff" : "none",
+                            position: "absolute",
+                            top: idx * 60,
+                            left: 0,
+                            right: 0,
+                            height: "60px",
+                            borderBottom: "1px solid #f5f5f5",
                           }}
-                          onDragOver={(e) => handleDragOver(e, cellKey)}
-                          onDragLeave={handleDragLeave}
-                          onDrop={(e) => handleDrop(e, day)}
-                        >
-                          {events.length === 0 ? (
+                        />
+                      ))}
+
+                      {/* Current time indicator */}
+                      {isToday(day) && (() => {
+                        const now = dayjs();
+                        const currentHour = now.hour();
+                        const currentMin = now.minute();
+                        if (currentHour >= 6 && currentHour < 23) {
+                          const topPosition = (currentHour - 6) * 60 + currentMin;
+                          return (
                             <div
                               style={{
-                                textAlign: "center",
-                                color: isDragOver ? "#1890ff" : "#ccc",
-                                padding: "20px 0",
-                                fontWeight: isDragOver ? "bold" : "normal",
+                                position: "absolute",
+                                top: topPosition,
+                                left: 0,
+                                right: 0,
+                                height: "2px",
+                                backgroundColor: "#ff4d4f",
+                                zIndex: 5,
                               }}
                             >
-                              {isDragOver ? "Thả vào đây" : "-"}
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  left: -4,
+                                  top: -4,
+                                  width: "10px",
+                                  height: "10px",
+                                  borderRadius: "50%",
+                                  backgroundColor: "#ff4d4f",
+                                }}
+                              />
                             </div>
-                          ) : (
-                            <div
-                              style={{
-                                display: "flex",
-                                flexDirection: "column",
-                                gap: "8px",
-                              }}
-                            >
-                              {events.map((event, idx) => {
-                                const eventKey = `${event.class.id}_${event.date}_${event.schedule["Thứ"]}`;
-                                const isEditing = inlineEditing?.eventKey === eventKey;
-                                const isDragging = draggingEvent?.class.id === event.class.id && 
-                                                   draggingEvent?.date === event.date;
-                                
-                                return (
-                                <div
-                                  key={idx}
-                                  draggable={!isEditing}
-                                  onDragStart={(e) => handleDragStart(e, event)}
-                                  onDragEnd={handleDragEnd}
-                                  style={{
-                                    padding: "8px",
-                                    backgroundColor: event.isCustomSchedule ? "#e6f7ff" : "#fff7e6",
-                                    borderLeft: `3px solid ${event.isCustomSchedule ? "#1890ff" : "#fa8c16"}`,
-                                    borderRadius: "4px",
-                                    cursor: isEditing ? "default" : "grab",
-                                    transition: "all 0.3s",
-                                    position: "relative",
-                                    opacity: isDragging ? 0.5 : 1,
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    if (!isEditing) {
-                                      e.currentTarget.style.backgroundColor =
-                                        event.isCustomSchedule ? "#bae7ff" : "#ffd591";
-                                      e.currentTarget.style.transform =
-                                        "translateX(2px)";
-                                    }
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    if (!isEditing) {
-                                      e.currentTarget.style.backgroundColor =
-                                        event.isCustomSchedule ? "#e6f7ff" : "#fff7e6";
-                                      e.currentTarget.style.transform =
-                                        "translateX(0)";
-                                    }
-                                  }}
-                                >
-                                  {!isEditing ? (
-                                    <>
-                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "4px" }}>
-                                        <div
-                                          style={{
-                                            fontWeight: "bold",
-                                            fontSize: "13px",
-                                            flex: 1,
-                                          }}
-                                          onClick={() =>
-                                            navigate(
-                                              `/workspace/classes/${event.class.id}/history`
-                                            )
-                                          }
-                                        >
-                                          <BookOutlined /> {event.class["Tên lớp"]}
-                                        </div>
-                                        <Space size={4}>
-                                          <Button
-                                            type="text"
-                                            size="small"
-                                            icon={<EditOutlined />}
-                                            onClick={(e) => handleInlineEdit(event, e)}
-                                            title="Sửa trực tiếp"
-                                            style={{
-                                              padding: "0 4px",
-                                              height: "20px",
-                                              fontSize: "10px",
-                                            }}
-                                          />
-                                          <Button
-                                            type="text"
-                                            size="small"
-                                            onClick={(e) => handleEditSchedule(event, e)}
-                                            title="Sửa chi tiết (Modal)"
-                                            style={{
-                                              padding: "0 4px",
-                                              height: "20px",
-                                              fontSize: "10px",
-                                            }}
-                                          >
-                                            ...
-                                          </Button>
-                                        </Space>
+                          );
+                        }
+                        return null;
+                      })()}
+
+                      {/* Events */}
+                      {positionedEvents.map(({ event, column, totalColumns }, idx) => {
+                        const { top, height } = getEventStyle(event);
+                        const eventKey = `${event.class.id}_${event.date}_${event.schedule["Thứ"]}`;
+                        const isDragging = draggingEvent?.class.id === event.class.id && draggingEvent?.date === event.date;
+                        
+                        // Calculate width and left position for overlapping events
+                        const width = `calc((100% - 4px) / ${totalColumns})`;
+                        const left = `calc(${column} * (100% - 4px) / ${totalColumns} + 2px)`;
+
+                        // Generate color based on class name for variety
+                        const colors = [
+                          { bg: "#fff1f0", border: "#ff4d4f" }, // red
+                          { bg: "#fff7e6", border: "#fa8c16" }, // orange  
+                          { bg: "#fffbe6", border: "#fadb14" }, // yellow
+                          { bg: "#f6ffed", border: "#52c41a" }, // green
+                          { bg: "#e6fffb", border: "#13c2c2" }, // cyan
+                          { bg: "#e6f7ff", border: "#1890ff" }, // blue
+                          { bg: "#f9f0ff", border: "#722ed1" }, // purple
+                          { bg: "#fff0f6", border: "#eb2f96" }, // pink
+                        ];
+                        const colorIndex = event.class["Tên lớp"]?.charCodeAt(0) % colors.length || 0;
+                        const colorScheme = colors[colorIndex];
+
+                        return (
+                          <div
+                            key={`${eventKey}_${idx}`}
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, event)}
+                            onDragEnd={handleDragEnd}
+                            style={{
+                              position: "absolute",
+                              top: top,
+                              left: left,
+                              width: width,
+                              height: Math.max(height, 50),
+                              backgroundColor: colorScheme.bg,
+                              borderLeft: `3px solid ${colorScheme.border}`,
+                              borderRadius: "4px",
+                              padding: "4px 6px",
+                              fontSize: "11px",
+                              overflow: "hidden",
+                              cursor: "pointer",
+                              opacity: isDragging ? 0.5 : 1,
+                              zIndex: 2,
+                              boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+                              transition: "all 0.2s",
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.15)";
+                              e.currentTarget.style.zIndex = "15";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.boxShadow = "0 1px 2px rgba(0,0,0,0.1)";
+                              e.currentTarget.style.zIndex = "2";
+                            }}
+                            onClick={() => navigate(`/workspace/classes/${event.class.id}/history`)}
+                          >
+                              <Popover
+                                content={
+                                  <div style={{ maxWidth: "250px" }}>
+                                    <div style={{ fontWeight: "bold", marginBottom: "8px" }}>
+                                      {event.class["Tên lớp"]}
+                                    </div>
+                                    <div style={{ fontSize: "12px", marginBottom: "4px" }}>
+                                      🕐 {event.schedule["Giờ bắt đầu"]} - {event.schedule["Giờ kết thúc"]}
+                                    </div>
+                                    <div style={{ fontSize: "12px", marginBottom: "4px" }}>
+                                      👨‍🏫 {event.class["Giáo viên chủ nhiệm"]}
+                                    </div>
+                                    {event.class["Phòng học"] && (
+                                      <div style={{ fontSize: "12px", marginBottom: "4px" }}>
+                                        📍 {getRoomName(event.class["Phòng học"])}
                                       </div>
-                                      <div
-                                        onClick={() =>
-                                          navigate(
-                                            `/workspace/classes/${event.class.id}/history`
-                                          )
-                                        }
-                                      >
-                                        <div
-                                          style={{
-                                            fontSize: "12px",
-                                            color: "#666",
-                                            marginBottom: "4px",
-                                            cursor: "pointer",
-                                            padding: "4px",
-                                            borderRadius: "4px",
-                                            backgroundColor: "rgba(0,0,0,0.02)",
-                                          }}
-                                          onClick={(e) => handleInlineEdit(event, e)}
-                                          title="Click để chỉnh sửa"
-                                          onMouseEnter={(e) => {
-                                            e.currentTarget.style.backgroundColor = "rgba(24, 144, 255, 0.1)";
-                                          }}
-                                          onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor = "rgba(0,0,0,0.02)";
-                                          }}
-                                        >
-                                          🕐 {event.schedule["Giờ bắt đầu"]} -{" "}
-                                          {event.schedule["Giờ kết thúc"]}
-                                        </div>
-                                        <div
-                                          style={{
-                                            fontSize: "11px",
-                                            color: "#999",
-                                            marginBottom: "4px",
-                                            cursor: "pointer",
-                                            padding: "4px",
-                                            borderRadius: "4px",
-                                            backgroundColor: "rgba(0,0,0,0.02)",
-                                          }}
-                                          onClick={(e) => handleInlineEdit(event, e)}
-                                          title="Click để chỉnh sửa"
-                                          onMouseEnter={(e) => {
-                                            e.currentTarget.style.backgroundColor = "rgba(24, 144, 255, 0.1)";
-                                          }}
-                                          onMouseLeave={(e) => {
-                                            e.currentTarget.style.backgroundColor = "rgba(0,0,0,0.02)";
-                                          }}
-                                        >
-                                          📅 {dayjs(event.date).format("DD/MM/YYYY")}
-                                        </div>
-                                        <div
-                                          style={{
-                                            fontSize: "11px",
-                                            color: "#999",
-                                            marginBottom: "4px",
-                                          }}
-                                        >
-                                          <UserOutlined />{" "}
-                                          {event.class["Giáo viên chủ nhiệm"]}
-                                        </div>
-                                        {(event.class["Phòng học"] || event.schedule["Địa điểm"]) && (
-                                          <div
-                                            style={{ fontSize: "11px", color: "#999", marginBottom: "4px" }}
-                                          >
-                                            <EnvironmentOutlined />{" "}
-                                            {getRoomName(event.class["Phòng học"]) || event.schedule["Địa điểm"]}
-                                          </div>
-                                        )}
-                                        <div style={{ marginTop: "4px", display: "flex", gap: "4px", alignItems: "center" }}>
-                                          <Tag
-                                            color="orange"
-                                            style={{ fontSize: "10px", margin: 0 }}
-                                          >
-                                            {subjectMap[event.class["Môn học"]] ||
-                                              event.class["Môn học"]}
-                                          </Tag>
-                                          {(() => {
-                                            const attendance = getAttendanceCount(event.class.id, event.date);
-                                            if (attendance.total > 0) {
-                                              return (
-                                                <span
-                                                  style={{
-                                                    fontSize: "11px",
-                                                    fontWeight: "bold",
-                                                    color: "#52c41a",
-                                                    backgroundColor: "#ff4d4f",
-                                                    padding: "2px 6px",
-                                                    borderRadius: "4px",
-                                                    marginLeft: "4px",
-                                                  }}
-                                                >
-                                                  {attendance.present}/{attendance.total}
-                                                </span>
-                                              );
-                                            }
-                                            return null;
-                                          })()}
-                                        </div>
-                                        {event.isCustomSchedule && (
-                                          <Tag color="blue" style={{ fontSize: "9px", marginTop: "4px" }}>
-                                            Đã chỉnh sửa
-                                          </Tag>
-                                        )}
-                                      </div>
-                                    </>
-                                  ) : (
-                                    <div style={{ padding: "4px", backgroundColor: "#f0f9ff", borderRadius: "4px", border: "1px solid #91d5ff" }}>
-                                      <div style={{ fontSize: "11px", fontWeight: "bold", marginBottom: "8px", color: "#1890ff" }}>
-                                        ✏️ Chỉnh sửa lịch học
-                                      </div>
-                                      <Form form={inlineForm} layout="vertical" size="small">
-                                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "8px" }}>
-                                          <Form.Item
-                                            label="Ngày"
-                                            name="Ngày"
-                                            rules={[{ required: true, message: "Chọn ngày" }]}
-                                            style={{ marginBottom: 0 }}
-                                          >
-                                            <DatePicker
-                                              format="DD/MM/YYYY"
-                                              style={{ width: "100%" }}
-                                              size="small"
-                                            />
-                                          </Form.Item>
-                                          <div style={{ display: "flex", gap: "4px" }}>
-                                            <Form.Item
-                                              label="Bắt đầu"
-                                              name="Giờ bắt đầu"
-                                              rules={[{ required: true, message: "Chọn giờ" }]}
-                                              style={{ marginBottom: 0, flex: 1 }}
-                                            >
-                                              <TimePicker
-                                                format="HH:mm"
-                                                style={{ width: "100%" }}
-                                                size="small"
-                                              />
-                                            </Form.Item>
-                                            <Form.Item
-                                              label="Kết thúc"
-                                              name="Giờ kết thúc"
-                                              rules={[{ required: true, message: "Chọn giờ" }]}
-                                              style={{ marginBottom: 0, flex: 1 }}
-                                            >
-                                              <TimePicker
-                                                format="HH:mm"
-                                                style={{ width: "100%" }}
-                                                size="small"
-                                              />
-                                            </Form.Item>
-                                          </div>
-                                        </div>
-                                        <Space size="small" style={{ width: "100%", justifyContent: "flex-end", marginTop: "4px" }}>
-                                          <Button size="small" onClick={handleInlineCancel}>
-                                            Hủy
-                                          </Button>
-                                          <Button size="small" type="primary" onClick={handleInlineSave}>
-                                            Lưu
-                                          </Button>
-                                        </Space>
-                                      </Form>
+                                    )}
+                                    <div style={{ marginTop: "8px" }}>
+                                      <Space size={4}>
+                                        <Button size="small" type="primary" onClick={(e) => { e.stopPropagation(); handleEditSchedule(event, e); }}>
+                                          <EditOutlined /> Sửa lịch
+                                        </Button>
+                                      </Space>
+                                    </div>
+                                  </div>
+                                }
+                                trigger="hover"
+                                placement="right"
+                              >
+                                <div style={{ height: "100%" }}>
+                                  <div style={{ fontWeight: "bold", color: colorScheme.border, marginBottom: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                    {event.class["Tên lớp"]}
+                                  </div>
+                                  <div style={{ color: "#666", fontSize: "10px" }}>
+                                    {event.schedule["Giờ bắt đầu"]} - {event.schedule["Giờ kết thúc"]}
+                                  </div>
+                                  {height > 60 && (
+                                    <div style={{ color: "#999", fontSize: "10px", marginTop: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                      {getRoomName(event.class["Phòng học"]) || event.class["Giáo viên chủ nhiệm"]}
                                     </div>
                                   )}
+                                  {event.isCustomSchedule && (
+                                    <Tag color="blue" style={{ fontSize: "9px", marginTop: "2px", padding: "0 4px" }}>
+                                      Đã sửa
+                                    </Tag>
+                                  )}
                                 </div>
-                              );
-                              })}
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                              </Popover>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       </div>
 
+      {/* Confirm Modal - Hỏi sửa tất cả hay chỉ ngày này */}
+      <Modal
+        title={confirmModalType === 'edit' ? "Chọn loại cập nhật" : "Chọn loại di chuyển"}
+        open={confirmModalVisible}
+        onCancel={() => {
+          setConfirmModalVisible(false);
+          setPendingAction(null);
+        }}
+        footer={null}
+        width={500}
+      >
+        <div style={{ padding: "16px 0" }}>
+          {pendingAction && (
+            <div style={{ marginBottom: "20px", padding: "12px", backgroundColor: "#f5f5f5", borderRadius: "8px" }}>
+              <div><strong>Lớp:</strong> {pendingAction.event.class["Tên lớp"]}</div>
+              <div><strong>Thời gian:</strong> {pendingAction.event.schedule["Giờ bắt đầu"]} - {pendingAction.event.schedule["Giờ kết thúc"]}</div>
+              {confirmModalType === 'drag' && pendingAction.targetDate && (
+                <div style={{ marginTop: "8px", color: "#1890ff" }}>
+                  <strong>Di chuyển từ:</strong> {dayjs(pendingAction.event.date).format("dddd, DD/MM/YYYY")}
+                  <br />
+                  <strong>Đến:</strong> {pendingAction.targetDate.format("dddd, DD/MM/YYYY")}
+                </div>
+              )}
+            </div>
+          )}
+          
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <Button 
+              type="primary" 
+              size="large" 
+              block 
+              onClick={() => handleConfirmAction(true)}
+              style={{ height: "auto", padding: "16px", textAlign: "left" }}
+            >
+              <div>
+                <div style={{ fontWeight: "bold", fontSize: "15px" }}>
+                  {confirmModalType === 'edit' ? "📅 Sửa tất cả các tuần" : "📅 Di chuyển tất cả các tuần"}
+                </div>
+                <div style={{ fontSize: "12px", opacity: 0.8, marginTop: "4px" }}>
+                  {confirmModalType === 'edit' 
+                    ? "Cập nhật lịch gốc của lớp. Thay đổi sẽ áp dụng cho tất cả các tuần."
+                    : "Thay đổi thứ học cố định của lớp. Từ tuần này trở đi lớp sẽ học vào thứ mới."
+                  }
+                </div>
+              </div>
+            </Button>
+            
+            <Button 
+              size="large" 
+              block 
+              onClick={() => handleConfirmAction(false)}
+              style={{ height: "auto", padding: "16px", textAlign: "left" }}
+            >
+              <div>
+                <div style={{ fontWeight: "bold", fontSize: "15px" }}>
+                  {confirmModalType === 'edit' ? "📌 Chỉ sửa ngày này" : "📌 Chỉ di chuyển ngày này"}
+                </div>
+                <div style={{ fontSize: "12px", opacity: 0.7, marginTop: "4px" }}>
+                  {confirmModalType === 'edit' 
+                    ? "Tạo lịch học bù riêng cho ngày này. Các tuần khác giữ nguyên."
+                    : "Tạo lịch học bù cho ngày mới. Các tuần khác vẫn học theo lịch cũ."
+                  }
+                </div>
+              </div>
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Edit Schedule Modal */}
       <Modal
-        title="Chỉnh sửa lịch học trong thời khóa biểu"
+        title={
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <EditOutlined style={{ color: "#1890ff" }} />
+            <span>Chỉnh sửa lịch học</span>
+          </div>
+        }
         open={isEditModalOpen}
-        onOk={handleSaveSchedule}
         onCancel={() => {
           setIsEditModalOpen(false);
           setEditingEvent(null);
           editForm.resetFields();
         }}
-        okText="Lưu"
+        okText="Lưu thay đổi"
         cancelText="Hủy"
-        width={600}
+        width={500}
         footer={[
           editingEvent?.scheduleId && (
             <Button key="delete" danger onClick={handleDeleteSchedule}>
-              Xóa khỏi thời khóa biểu
+              Xóa lịch bù
             </Button>
           ),
           <Button key="cancel" onClick={() => {
@@ -1169,39 +1350,46 @@ const AdminSchedule = () => {
             Hủy
           </Button>,
           <Button key="save" type="primary" onClick={handleSaveSchedule}>
-            Lưu
+            Lưu thay đổi
           </Button>,
         ].filter(Boolean)}
       >
         {editingEvent && (
-          <div style={{ marginBottom: "16px", padding: "12px", backgroundColor: "#f5f5f5", borderRadius: "4px" }}>
-            <div><strong>Lớp:</strong> {editingEvent.class["Tên lớp"]}</div>
-            <div><strong>Ngày:</strong> {dayjs(editingEvent.date).format("dddd, DD/MM/YYYY")}</div>
-            <div style={{ marginTop: "8px", fontSize: "12px", color: "#666" }}>
-              <em>Lưu ý: Thay đổi này chỉ ảnh hưởng đến thời khóa biểu, không thay đổi lịch học trong Lớp học.</em>
+          <div style={{ marginBottom: "20px", padding: "16px", backgroundColor: "#f0f9ff", borderRadius: "8px", border: "1px solid #91d5ff" }}>
+            <div style={{ fontSize: "16px", fontWeight: "bold", marginBottom: "8px", color: "#1890ff" }}>
+              {editingEvent.class["Tên lớp"]}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", fontSize: "13px" }}>
+              <div>📅 <strong>Ngày:</strong> {dayjs(editingEvent.date).format("dddd, DD/MM/YYYY")}</div>
+              <div>👨‍🏫 <strong>GV:</strong> {editingEvent.class["Giáo viên chủ nhiệm"]}</div>
+              {editingEvent.class["Phòng học"] && (
+                <div>📍 <strong>Phòng:</strong> {getRoomName(editingEvent.class["Phòng học"])}</div>
+              )}
+              {editingEvent.isCustomSchedule && (
+                <div><Tag color="blue">Đã có lịch bù</Tag></div>
+              )}
             </div>
           </div>
         )}
         <Form form={editForm} layout="vertical">
-          <Form.Item
-            label="Giờ bắt đầu"
-            name="Giờ bắt đầu"
-            rules={[{ required: true, message: "Chọn giờ bắt đầu" }]}
-          >
-            <TimePicker format="HH:mm" style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item
-            label="Giờ kết thúc"
-            name="Giờ kết thúc"
-            rules={[{ required: true, message: "Chọn giờ kết thúc" }]}
-          >
-            <TimePicker format="HH:mm" style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item label="Phòng học" name="Phòng học">
-            <Input placeholder="Nhập phòng học (tùy chọn)" />
-          </Form.Item>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+            <Form.Item
+              label="Giờ bắt đầu"
+              name="Giờ bắt đầu"
+              rules={[{ required: true, message: "Chọn giờ bắt đầu" }]}
+            >
+              <TimePicker format="HH:mm" style={{ width: "100%" }} size="large" />
+            </Form.Item>
+            <Form.Item
+              label="Giờ kết thúc"
+              name="Giờ kết thúc"
+              rules={[{ required: true, message: "Chọn giờ kết thúc" }]}
+            >
+              <TimePicker format="HH:mm" style={{ width: "100%" }} size="large" />
+            </Form.Item>
+          </div>
           <Form.Item label="Ghi chú" name="Ghi chú">
-            <Input.TextArea rows={3} placeholder="Nhập ghi chú (tùy chọn)" />
+            <Input.TextArea rows={2} placeholder="Nhập ghi chú (tùy chọn)" />
           </Form.Item>
         </Form>
       </Modal>

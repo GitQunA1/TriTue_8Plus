@@ -90,6 +90,15 @@ const TeacherSchedule = () => {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<ScheduleEvent | null>(null);
   const [editForm] = Form.useForm();
+  
+  // State cho modal xác nhận loại sửa đổi
+  const [confirmModalVisible, setConfirmModalVisible] = useState(false);
+  const [confirmModalType, setConfirmModalType] = useState<'edit' | 'drag'>('edit');
+  const [pendingAction, setPendingAction] = useState<{
+    event: ScheduleEvent;
+    targetDate?: Dayjs;
+    newValues?: any;
+  } | null>(null);
 
   const teacherId =
     teacherData?.id || userProfile?.teacherId || userProfile?.uid || "";
@@ -411,54 +420,224 @@ const TeacherSchedule = () => {
       return;
     }
 
-    const newDayOfWeek = targetDay.day() === 0 ? 8 : targetDay.day() + 1;
-    const oldDayOfWeek = draggingEvent.schedule["Thứ"];
+    // Nếu đây là lịch bù (có scheduleId), di chuyển trực tiếp không cần hỏi
+    if (draggingEvent.isCustomSchedule && draggingEvent.scheduleId) {
+      await moveScheduleThisDateOnly(draggingEvent, targetDay);
+      setDraggingEvent(null);
+      return;
+    }
+
+    // Nếu là lịch mặc định, hỏi người dùng muốn di chuyển tất cả hay chỉ ngày này
+    setPendingAction({ event: draggingEvent, targetDate: targetDay });
+    setConfirmModalType('drag');
+    setConfirmModalVisible(true);
+    setDraggingEvent(null);
+  };
+
+  // Di chuyển lịch cho tất cả các tuần (cập nhật thứ trong lịch gốc)
+  const moveScheduleAllWeeks = async (event: ScheduleEvent, targetDate: Dayjs) => {
+    try {
+      const newDayOfWeek = targetDate.day() === 0 ? 8 : targetDate.day() + 1;
+      const oldDayOfWeek = event.schedule["Thứ"];
+      
+      const classRef = ref(database, `datasheet/Lớp_học/${event.class.id}`);
+      const currentSchedules = event.class["Lịch học"] || [];
+      
+      // Cập nhật thứ trong lịch học của lớp
+      const updatedSchedules = currentSchedules.map((s: any) => {
+        if (s["Thứ"] === oldDayOfWeek && 
+            s["Giờ bắt đầu"] === event.schedule["Giờ bắt đầu"] &&
+            s["Giờ kết thúc"] === event.schedule["Giờ kết thúc"]) {
+          return {
+            ...s,
+            "Thứ": newDayOfWeek,
+          };
+        }
+        return s;
+      });
+      
+      await update(classRef, { "Lịch học": updatedSchedules });
+      
+      // Xóa tất cả các lịch bù liên quan đến thứ cũ của lớp này
+      const entriesToDelete: string[] = [];
+      timetableEntries.forEach((entry) => {
+        if (entry["Class ID"] === event.class.id && 
+            (entry["Thứ"] === oldDayOfWeek || entry["Thay thế thứ"] === oldDayOfWeek)) {
+          entriesToDelete.push(entry.id);
+        }
+      });
+      
+      for (const entryId of entriesToDelete) {
+        const entryRef = ref(database, `datasheet/Thời_khoá_biểu/${entryId}`);
+        await remove(entryRef);
+      }
+      
+      const oldDayName = ["", "", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"][oldDayOfWeek];
+      const newDayName = ["", "", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"][newDayOfWeek];
+      message.success(`Đã đổi lịch từ ${oldDayName} sang ${newDayName} cho tất cả các tuần`);
+    } catch (error) {
+      console.error("Error moving schedule for all weeks:", error);
+      message.error("Có lỗi xảy ra khi di chuyển lịch");
+    }
+  };
+
+  // Di chuyển lịch chỉ cho ngày này (tạo lịch bù)
+  const moveScheduleThisDateOnly = async (event: ScheduleEvent, targetDate: Dayjs) => {
+    const newDateStr = targetDate.format("YYYY-MM-DD");
+    const oldDateStr = event.date.format("YYYY-MM-DD");
+    const newDayOfWeek = targetDate.day() === 0 ? 8 : targetDate.day() + 1;
+    const oldDayOfWeek = event.schedule["Thứ"];
 
     try {
       const timetableData: Omit<TimetableEntry, "id"> = {
-        "Class ID": draggingEvent.class.id,
-        "Mã lớp": draggingEvent.class["Mã lớp"] || "",
-        "Tên lớp": draggingEvent.class["Tên lớp"] || "",
+        "Class ID": event.class.id,
+        "Mã lớp": event.class["Mã lớp"] || "",
+        "Tên lớp": event.class["Tên lớp"] || "",
         "Ngày": newDateStr,
         "Thứ": newDayOfWeek,
-        "Giờ bắt đầu": draggingEvent.schedule["Giờ bắt đầu"],
-        "Giờ kết thúc": draggingEvent.schedule["Giờ kết thúc"],
-        "Phòng học": draggingEvent.class["Phòng học"] || "",
+        "Giờ bắt đầu": event.schedule["Giờ bắt đầu"],
+        "Giờ kết thúc": event.schedule["Giờ kết thúc"],
+        "Phòng học": event.class["Phòng học"] || "",
       };
 
-      if (!draggingEvent.isCustomSchedule) {
+      // Thêm thông tin ngày gốc bị thay thế
+      if (!event.isCustomSchedule) {
         (timetableData as any)["Thay thế ngày"] = oldDateStr;
         (timetableData as any)["Thay thế thứ"] = oldDayOfWeek;
       }
 
-      if (draggingEvent.scheduleId) {
+      if (event.scheduleId) {
+        // Lấy thông tin thay thế cũ nếu có
         const existingEntry = Array.from(timetableEntries.values()).find(
-          entry => entry.id === draggingEvent.scheduleId
+          entry => entry.id === event.scheduleId
         );
         if (existingEntry && existingEntry["Thay thế ngày"]) {
           (timetableData as any)["Thay thế ngày"] = existingEntry["Thay thế ngày"];
           (timetableData as any)["Thay thế thứ"] = existingEntry["Thay thế thứ"];
         }
 
-        const oldEntryRef = ref(database, `datasheet/Thời_khoá_biểu/${draggingEvent.scheduleId}`);
+        // Xóa entry cũ và tạo mới
+        const oldEntryRef = ref(database, `datasheet/Thời_khoá_biểu/${event.scheduleId}`);
         await remove(oldEntryRef);
-
-        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
-        const newEntryRef = push(timetableRef);
-        await set(newEntryRef, timetableData);
-      } else {
-        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
-        const newEntryRef = push(timetableRef);
-        await set(newEntryRef, timetableData);
       }
+
+      const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+      const newEntryRef = push(timetableRef);
+      await set(newEntryRef, timetableData);
 
       message.success(`Đã di chuyển lịch từ ${oldDateStr} sang ${newDateStr}`);
     } catch (error) {
       console.error("Error moving schedule:", error);
       message.error("Có lỗi xảy ra khi di chuyển lịch học");
     }
+  };
 
-    setDraggingEvent(null);
+  // Xử lý khi người dùng xác nhận loại sửa đổi
+  const handleConfirmAction = async (updateAll: boolean) => {
+    setConfirmModalVisible(false);
+    
+    if (!pendingAction) return;
+    
+    if (confirmModalType === 'edit') {
+      if (updateAll) {
+        await saveScheduleAllWeeks(pendingAction.event, pendingAction.newValues);
+      } else {
+        await saveScheduleThisDateOnly(pendingAction.event, pendingAction.newValues);
+      }
+    } else if (confirmModalType === 'drag' && pendingAction.targetDate) {
+      if (updateAll) {
+        await moveScheduleAllWeeks(pendingAction.event, pendingAction.targetDate);
+      } else {
+        await moveScheduleThisDateOnly(pendingAction.event, pendingAction.targetDate);
+      }
+    }
+    
+    setPendingAction(null);
+  };
+
+  // Lưu lịch cho tất cả các tuần (cập nhật lịch gốc của lớp)
+  const saveScheduleAllWeeks = async (event: ScheduleEvent, values: any) => {
+    try {
+      const classRef = ref(database, `datasheet/Lớp_học/${event.class.id}`);
+      const currentSchedules = event.class["Lịch học"] || [];
+      const dayOfWeek = event.schedule["Thứ"];
+      
+      // Cập nhật lịch học trong mảng Lịch học của lớp
+      const updatedSchedules = currentSchedules.map((s: any) => {
+        if (s["Thứ"] === dayOfWeek && 
+            s["Giờ bắt đầu"] === event.schedule["Giờ bắt đầu"] &&
+            s["Giờ kết thúc"] === event.schedule["Giờ kết thúc"]) {
+          return {
+            "Thứ": dayOfWeek,
+            "Giờ bắt đầu": values["Giờ bắt đầu"].format("HH:mm"),
+            "Giờ kết thúc": values["Giờ kết thúc"].format("HH:mm"),
+          };
+        }
+        return s;
+      });
+      
+      await update(classRef, { "Lịch học": updatedSchedules });
+      
+      // Xóa tất cả các lịch bù cùng thứ của lớp này (vì đã cập nhật lịch gốc)
+      const entriesToDelete: string[] = [];
+      timetableEntries.forEach((entry) => {
+        if (entry["Class ID"] === event.class.id && entry["Thứ"] === dayOfWeek) {
+          entriesToDelete.push(entry.id);
+        }
+      });
+      
+      for (const entryId of entriesToDelete) {
+        const entryRef = ref(database, `datasheet/Thời_khoá_biểu/${entryId}`);
+        await remove(entryRef);
+      }
+      
+      message.success("Đã cập nhật lịch cho tất cả các tuần");
+      setIsEditModalOpen(false);
+      setEditingEvent(null);
+      editForm.resetFields();
+    } catch (error) {
+      console.error("Error saving schedule for all weeks:", error);
+      message.error("Có lỗi xảy ra khi lưu lịch học");
+    }
+  };
+
+  // Lưu lịch chỉ cho ngày này (tạo/cập nhật lịch bù)
+  const saveScheduleThisDateOnly = async (event: ScheduleEvent, values: any) => {
+    try {
+      const dateStr = event.date.format("YYYY-MM-DD");
+      const dayOfWeek = event.date.day() === 0 ? 8 : event.date.day() + 1;
+
+      const timetableData: Omit<TimetableEntry, "id"> = {
+        "Class ID": event.class.id,
+        "Mã lớp": event.class["Mã lớp"] || "",
+        "Tên lớp": event.class["Tên lớp"] || "",
+        "Ngày": dateStr,
+        "Thứ": dayOfWeek,
+        "Giờ bắt đầu": values["Giờ bắt đầu"].format("HH:mm"),
+        "Giờ kết thúc": values["Giờ kết thúc"].format("HH:mm"),
+        "Phòng học": event.class["Phòng học"] || "",
+      };
+
+      if (event.scheduleId) {
+        // Cập nhật lịch bù hiện có
+        const entryRef = ref(database, `datasheet/Thời_khoá_biểu/${event.scheduleId}`);
+        await set(entryRef, timetableData);
+        message.success("Đã cập nhật lịch học bù");
+      } else {
+        // Tạo lịch bù mới
+        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+        const newEntryRef = push(timetableRef);
+        await set(newEntryRef, timetableData);
+        message.success("Đã tạo lịch học bù cho ngày này");
+      }
+
+      setIsEditModalOpen(false);
+      setEditingEvent(null);
+      editForm.resetFields();
+    } catch (error) {
+      console.error("Error saving schedule:", error);
+      message.error("Có lỗi xảy ra khi lưu lịch học");
+    }
   };
 
   // ===== EDIT SCHEDULE HANDLERS =====
@@ -475,69 +654,22 @@ const TeacherSchedule = () => {
 
   const handleSaveSchedule = async () => {
     if (!editingEvent) return;
-
+    
     try {
       const values = await editForm.validateFields();
-      const newDateStr = values["Ngày"].format("YYYY-MM-DD");
-      const newDayOfWeek = values["Ngày"].day() === 0 ? 8 : values["Ngày"].day() + 1;
-      const oldDateStr = editingEvent.date.format("YYYY-MM-DD");
-      const oldDayOfWeek = editingEvent.schedule["Thứ"];
-
-      const timetableData: Omit<TimetableEntry, "id"> = {
-        "Class ID": editingEvent.class.id,
-        "Mã lớp": editingEvent.class["Mã lớp"] || "",
-        "Tên lớp": editingEvent.class["Tên lớp"] || "",
-        "Ngày": newDateStr,
-        "Thứ": newDayOfWeek,
-        "Giờ bắt đầu": values["Giờ bắt đầu"].format("HH:mm"),
-        "Giờ kết thúc": values["Giờ kết thúc"].format("HH:mm"),
-        "Phòng học": editingEvent.class["Phòng học"] || "",
-      };
-
-      // Nếu đổi ngày và đây là lịch mặc định, thêm thông tin ngày gốc bị thay thế
-      if (newDateStr !== oldDateStr && !editingEvent.isCustomSchedule) {
-        (timetableData as any)["Thay thế ngày"] = oldDateStr;
-        (timetableData as any)["Thay thế thứ"] = oldDayOfWeek;
+      
+      // Nếu đây là lịch bù (có scheduleId), update trực tiếp không cần hỏi
+      if (editingEvent.isCustomSchedule && editingEvent.scheduleId) {
+        await saveScheduleThisDateOnly(editingEvent, values);
+        return;
       }
-
-      if (editingEvent.scheduleId) {
-        // Đang sửa lịch bù hiện có
-        if (newDateStr === oldDateStr) {
-          // Chỉ đổi giờ - update tại chỗ
-          const existingRef = ref(database, `datasheet/Thời_khoá_biểu/${editingEvent.scheduleId}`);
-          await update(existingRef, timetableData);
-        } else {
-          // Đổi ngày - giữ lại thông tin thay thế cũ
-          const existingEntry = Array.from(timetableEntries.values()).find(
-            entry => entry.id === editingEvent.scheduleId
-          );
-          if (existingEntry && existingEntry["Thay thế ngày"]) {
-            (timetableData as any)["Thay thế ngày"] = existingEntry["Thay thế ngày"];
-            (timetableData as any)["Thay thế thứ"] = existingEntry["Thay thế thứ"];
-          }
-          
-          const oldEntryRef = ref(database, `datasheet/Thời_khoá_biểu/${editingEvent.scheduleId}`);
-          await remove(oldEntryRef);
-
-          const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
-          const newEntryRef = push(timetableRef);
-          await set(newEntryRef, timetableData);
-        }
-        message.success("Đã cập nhật lịch dạy");
-      } else {
-        // Tạo lịch bù mới
-        const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
-        const newEntryRef = push(timetableRef);
-        await set(newEntryRef, timetableData);
-        message.success("Đã tạo lịch dạy mới");
-      }
-
-      setIsEditModalOpen(false);
-      setEditingEvent(null);
-      editForm.resetFields();
+      
+      // Nếu là lịch mặc định, hỏi người dùng muốn sửa tất cả hay chỉ ngày này
+      setPendingAction({ event: editingEvent, newValues: values });
+      setConfirmModalType('edit');
+      setConfirmModalVisible(true);
     } catch (error) {
-      console.error("Error saving schedule:", error);
-      message.error("Có lỗi xảy ra khi lưu lịch dạy");
+      console.error("Validation error:", error);
     }
   };
 
@@ -979,6 +1111,75 @@ const TeacherSchedule = () => {
           </div>
         </div>
       </div>
+
+      {/* Confirm Modal - Hỏi sửa tất cả hay chỉ ngày này */}
+      <Modal
+        title={confirmModalType === 'edit' ? "Chọn loại cập nhật" : "Chọn loại di chuyển"}
+        open={confirmModalVisible}
+        onCancel={() => {
+          setConfirmModalVisible(false);
+          setPendingAction(null);
+        }}
+        footer={null}
+        width={500}
+      >
+        <div style={{ padding: "16px 0" }}>
+          {pendingAction && (
+            <div style={{ marginBottom: "20px", padding: "12px", backgroundColor: "#f5f5f5", borderRadius: "8px" }}>
+              <div><strong>Lớp:</strong> {pendingAction.event.class["Tên lớp"]}</div>
+              <div><strong>Thời gian:</strong> {pendingAction.event.schedule["Giờ bắt đầu"]} - {pendingAction.event.schedule["Giờ kết thúc"]}</div>
+              {confirmModalType === 'drag' && pendingAction.targetDate && (
+                <div style={{ marginTop: "8px", color: "#1890ff" }}>
+                  <strong>Di chuyển từ:</strong> {pendingAction.event.date.format("dddd, DD/MM/YYYY")}
+                  <br />
+                  <strong>Đến:</strong> {pendingAction.targetDate.format("dddd, DD/MM/YYYY")}
+                </div>
+              )}
+            </div>
+          )}
+          
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <Button 
+              type="primary" 
+              size="large" 
+              block 
+              onClick={() => handleConfirmAction(true)}
+              style={{ height: "auto", padding: "16px", textAlign: "left" }}
+            >
+              <div>
+                <div style={{ fontWeight: "bold", fontSize: "15px" }}>
+                  {confirmModalType === 'edit' ? "📅 Sửa tất cả các tuần" : "📅 Di chuyển tất cả các tuần"}
+                </div>
+                <div style={{ fontSize: "12px", opacity: 0.8, marginTop: "4px" }}>
+                  {confirmModalType === 'edit' 
+                    ? "Cập nhật lịch gốc của lớp. Thay đổi sẽ áp dụng cho tất cả các tuần."
+                    : "Thay đổi thứ học cố định của lớp. Từ tuần này trở đi lớp sẽ học vào thứ mới."
+                  }
+                </div>
+              </div>
+            </Button>
+            
+            <Button 
+              size="large" 
+              block 
+              onClick={() => handleConfirmAction(false)}
+              style={{ height: "auto", padding: "16px", textAlign: "left" }}
+            >
+              <div>
+                <div style={{ fontWeight: "bold", fontSize: "15px" }}>
+                  {confirmModalType === 'edit' ? "📌 Chỉ sửa ngày này" : "📌 Chỉ di chuyển ngày này"}
+                </div>
+                <div style={{ fontSize: "12px", opacity: 0.7, marginTop: "4px" }}>
+                  {confirmModalType === 'edit' 
+                    ? "Tạo lịch học bù riêng cho ngày này. Các tuần khác giữ nguyên."
+                    : "Tạo lịch học bù cho ngày mới. Các tuần khác vẫn học theo lịch cũ."
+                  }
+                </div>
+              </div>
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Edit Schedule Modal */}
       <Modal
