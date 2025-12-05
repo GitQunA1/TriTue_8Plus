@@ -125,3 +125,50 @@ export interface Course {
     "Ngày tạo": string; // Created date
     "Ngày cập nhật"?: string; // Updated date
 }
+
+// Monthly Report Types - Báo cáo theo HỌC SINH (gộp nhiều lớp)
+export interface ClassStats {
+    classId: string; // ID lớp
+    className: string; // Tên lớp
+    subject: string; // Môn học
+    totalSessions: number; // Tổng số buổi học
+    presentSessions: number; // Số buổi có mặt
+    absentSessions: number; // Số buổi vắng
+    attendanceRate: number; // Tỷ lệ chuyên cần (%)
+    averageScore: number; // Điểm trung bình
+    totalBonusPoints: number; // Tổng điểm thưởng
+    comment?: string; // Nhận xét của giáo viên cho lớp/môn học này
+}
+
+export interface MonthlyReportStats {
+    totalSessions: number; // Tổng số buổi học (tất cả lớp)
+    presentSessions: number; // Số buổi có mặt
+    absentSessions: number; // Số buổi vắng
+    attendanceRate: number; // Tỷ lệ chuyên cần (%)
+    averageScore: number; // Điểm trung bình
+    classStats: ClassStats[]; // Thống kê từng lớp
+}
+
+export interface MonthlyComment {
+    id: string;
+    studentId: string; // ID học sinh
+    studentName: string; // Tên học sinh
+    studentCode?: string; // Mã học sinh
+    teacherId: string; // ID giáo viên tạo báo cáo
+    teacherName: string; // Tên giáo viên
+    classIds: string[]; // Danh sách ID các lớp (thay vì 1 lớp)
+    classNames: string[]; // Danh sách tên các lớp
+    month: string; // YYYY-MM
+    aiComment: string; // Nhận xét gợi ý từ AI (tổng hợp tất cả lớp)
+    finalComment: string; // Nhận xét đã chỉnh sửa
+    stats: MonthlyReportStats; // Thống kê tháng (gộp tất cả lớp)
+    status: 'draft' | 'submitted' | 'approved'; // Trạng thái
+    createdAt: string; // Ngày tạo
+    updatedAt: string; // Ngày cập nhật
+    submittedAt?: string; // Ngày gửi (optional)
+    submittedBy?: string; // Người gửi (optional)
+    approvedAt?: string; // Ngày duyệt (optional)
+    approvedBy?: string; // Người duyệt (optional)
+    rejectedAt?: string; // Ngày từ chối (optional)
+    rejectedBy?: string; // Người từ chối (optional)
+}

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import {
   Modal,
   Button,
@@ -10,9 +10,6 @@ import {
   Row,
   Col,
   Statistic,
-  Alert,
-  Spin,
-  Input,
   Radio,
   Space,
   DatePicker,
@@ -22,15 +19,12 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   ClockCircleOutlined,
-  RobotOutlined,
   DownloadOutlined,
 } from "@ant-design/icons";
+import { ref, onValue } from "firebase/database";
+import { database } from "../firebase";
 import { useAttendanceStats } from "../hooks/useAttendanceStats";
-import { AttendanceSession } from "../types";
-import {
-  generateStudentComment,
-  StudentReportData,
-} from "../utils/geminiService";
+import { AttendanceSession, MonthlyComment, ClassStats } from "../types";
 import dayjs from "dayjs";
 import "dayjs/locale/vi";
 
@@ -50,6 +44,7 @@ interface StudentReportProps {
     [key: string]: any;
   };
   sessions: AttendanceSession[];
+  teacherName?: string;
 }
 
 const StudentReport = ({
@@ -57,20 +52,56 @@ const StudentReport = ({
   onClose,
   student,
   sessions,
+  teacherName,
 }: StudentReportProps) => {
   const printRef = useRef<HTMLDivElement>(null);
   const { getStudentStats } = useAttendanceStats();
-  const [aiComment, setAiComment] = useState<string>("");
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [commentError, setCommentError] = useState<string>("");
   const [viewMode, setViewMode] = useState<"session" | "monthly">("session");
   const [selectedMonth, setSelectedMonth] = useState<dayjs.Dayjs | null>(dayjs());
+  const [monthlyComments, setMonthlyComments] = useState<MonthlyComment[]>([]);
+
+  // Load monthly comments from Firebase
+  useEffect(() => {
+    if (!open || !student?.id) return;
+
+    const commentsRef = ref(database, "datasheet/Nhận_xét_tháng");
+    const unsubscribe = onValue(commentsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const commentList = Object.entries(data)
+          .map(([id, value]) => ({
+            id,
+            ...(value as Omit<MonthlyComment, "id">),
+          }))
+          .filter((c) => c.studentId === student.id);
+        setMonthlyComments(commentList);
+      } else {
+        setMonthlyComments([]);
+      }
+    });
+    return () => unsubscribe();
+  }, [open, student?.id]);
+
+  // Get comments for a specific class/subject from monthly comments
+  const getClassComment = (className: string): string => {
+    if (!selectedMonth) return "";
+    const monthStr = selectedMonth.format("YYYY-MM");
+    
+    const monthComment = monthlyComments.find(
+      (c) => c.month === monthStr && c.status === "approved"
+    );
+    
+    if (!monthComment?.stats?.classStats) return "";
+    
+    const classStats = monthComment.stats.classStats.find(
+      (cs) => cs.className === className || cs.subject === className
+    );
+    
+    return classStats?.comment || "";
+  };
 
   // Reset state when modal closes
   const handleClose = () => {
-    setAiComment("");
-    setCommentError("");
-    setIsGenerating(false);
     onClose();
   };
 
@@ -224,155 +255,6 @@ const StudentReport = ({
     },
   ];
 
-  const generateBasicComment = (averageScore: number) => {
-    let comment = `Nhận xét về học sinh ${student["Họ và tên"]}:\n\n`;
-
-    // Attendance evaluation
-    if (attendanceRate >= 90) {
-      comment += `✅ Chuyên cần: Xuất sắc với tỷ lệ tham gia ${attendanceRate}%. Em rất chăm chỉ và đều đặn đến lớp.\n\n`;
-    } else if (attendanceRate >= 75) {
-      comment += `✅ Chuyên cần: Tốt với tỷ lệ tham gia ${attendanceRate}%. Em cần duy trì sự đều đặn này.\n\n`;
-    } else if (attendanceRate >= 50) {
-      comment += `⚠️ Chuyên cần: Trung bình với tỷ lệ tham gia ${attendanceRate}%. Em cần cải thiện việc đi học đều đặn hơn.\n\n`;
-    } else {
-      comment += `❌ Chuyên cần: Cần cải thiện với tỷ lệ tham gia ${attendanceRate}%. Phụ huynh cần theo dõi sát sao hơn.\n\n`;
-    }
-
-    // Academic performance
-    if (averageScore >= 8) {
-      comment += `🌟 Kết quả học tập: Xuất sắc với điểm trung bình ${averageScore}/10. Em có năng lực học tập tốt.\n\n`;
-    } else if (averageScore >= 6.5) {
-      comment += `✅ Kết quả học tập: Khá với điểm trung bình ${averageScore}/10. Em đang tiến bộ tốt.\n\n`;
-    } else if (averageScore >= 5) {
-      comment += `⚠️ Kết quả học tập: Trung bình với điểm trung bình ${averageScore}/10. Em cần nỗ lực hơn nữa.\n\n`;
-    } else if (averageScore > 0) {
-      comment += `❌ Kết quả học tập: Yếu với điểm trung bình ${averageScore}/10. Em cần sự hỗ trợ thêm từ giáo viên và phụ huynh.\n\n`;
-    }
-
-    // General advice
-    comment += `💡 Lời khuyên: `;
-    if (attendanceRate < 75) {
-      comment += `Hãy đảm bảo em đi học đều đặn để không bỏ lỡ kiến thức. `;
-    }
-    if (averageScore < 6.5 && averageScore > 0) {
-      comment += `Dành thêm thời gian ôn tập và làm bài tập về nhà. `;
-    }
-    comment += `Tiếp tục cố gắng và giữ vững tinh thần học tập!\n\n`;
-
-    // Encouragement
-    comment += `🎯 Kỳ vọng: Với ${stats.totalHours} giờ học và ${stats.totalSessions} buổi học, em đã có nền tảng tốt. Hãy tiếp tục phát huy và hoàn thiện bản thân mỗi ngày!`;
-
-    return comment;
-  };
-
-  const handleGenerateComment = async () => {
-    setIsGenerating(true);
-    setCommentError("");
-
-    try {
-      // Calculate average score
-      const scores = studentSessions
-        .map(
-          (s) =>
-            s["Điểm danh"]?.find((r) => r["Student ID"] === student.id)?.[
-              "Điểm"
-            ]
-        )
-        .filter((score) => score !== undefined && score !== null) as number[];
-      const averageScore =
-        scores.length > 0
-          ? Number(
-              (scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1)
-            )
-          : 0;
-
-      // Get status text
-      const getStatusText = (record: any) => {
-        if (record["Có mặt"]) {
-          return record["Đi muộn"] ? "Đi muộn" : "Có mặt";
-        } else {
-          return record["Vắng có phép"] ? "Vắng có phép" : "Vắng không phép";
-        }
-      };
-
-      // Prepare recent sessions (last 10)
-      const recentSessions = studentSessions.slice(0, 10).map((session) => {
-        const studentRecord = session["Điểm danh"]?.find(
-          (r) => r["Student ID"] === student.id
-        );
-        const completed = studentRecord?.["Bài tập hoàn thành"];
-        const total = session["Bài tập"]?.["Tổng số bài"];
-
-        return {
-          date: dayjs(session["Ngày"]).format("DD/MM/YYYY"),
-          className: session["Tên lớp"],
-          status: studentRecord ? getStatusText(studentRecord) : "Không rõ",
-          score: studentRecord?.["Điểm"],
-          homework:
-            completed !== undefined && total
-              ? `${completed}/${total}`
-              : undefined,
-          note: studentRecord?.["Ghi chú"],
-        };
-      });
-
-      const reportData: StudentReportData = {
-        studentName: student["Họ và tên"],
-        studentCode: student["Mã học sinh"],
-        totalSessions: stats.totalSessions,
-        presentSessions: stats.presentSessions,
-        absentSessions: stats.absentSessions,
-        attendanceRate,
-        totalHours: stats.totalHours,
-        averageScore,
-        recentSessions,
-      };
-
-      try {
-        console.log("🤖 Calling Gemini API...");
-        const comment = await generateStudentComment(reportData);
-        console.log("✅ AI Comment received:", comment);
-        console.log("✅ Comment type:", typeof comment);
-        console.log("✅ Comment length:", comment?.length);
-        console.log(
-          "✅ Comment is empty?",
-          !comment || comment.trim().length === 0
-        );
-
-        if (!comment || comment.trim().length === 0) {
-          console.warn("⚠️ Comment is empty, using fallback");
-          const basicComment = generateBasicComment(averageScore);
-          setAiComment(basicComment);
-        } else {
-          setAiComment(comment);
-        }
-      } catch (apiError: any) {
-        console.log("❌ API Error:", apiError);
-        // If API fails, use basic comment as fallback
-        if (
-          apiError?.message?.includes("quota") ||
-          apiError?.message?.includes("giới hạn")
-        ) {
-          console.log("⚠️ Quota exceeded, using fallback...");
-          setCommentError(apiError.message);
-          // Generate basic comment as fallback
-          const basicComment = generateBasicComment(averageScore);
-          console.log("📝 Basic comment generated:", basicComment);
-          setAiComment(basicComment);
-        } else {
-          throw apiError;
-        }
-      }
-    } catch (error: any) {
-      console.error("Error generating comment:", error);
-      setCommentError(
-        error?.message || "Không thể tạo nhận xét. Vui lòng thử lại sau."
-      );
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
   const generateMonthlyPrintContent = () => {
     // Filter sessions by selected month
     const filteredSessions = selectedMonth
@@ -460,6 +342,9 @@ const StudentReport = ({
         ? (subjectScores.reduce((a, b) => a + b, 0) / subjectScores.length).toFixed(1)
         : "-";
 
+      // Get comment for this subject from monthly comments
+      const subjectComment = getClassComment(subject);
+
       let tableRows = "";
       sortedSessions.forEach((session) => {
         const studentRecord = session["Điểm danh"]?.find(
@@ -478,7 +363,6 @@ const StudentReport = ({
           const testName = studentRecord["Bài kiểm tra"] || "-";
           const score = studentRecord["Điểm kiểm tra"] ?? studentRecord["Điểm"] ?? "-";
           const bonusScore = studentRecord["Điểm thưởng"] ?? "-";
-          const note = studentRecord["Ghi chú"] || "-";
 
           tableRows += `
             <tr>
@@ -488,7 +372,6 @@ const StudentReport = ({
               <td style="text-align: left; font-size: 11px;">${testName}</td>
               <td style="text-align: center; font-weight: bold;">${score}</td>
               <td style="text-align: center;">${bonusScore}</td>
-              <td style="text-align: left; font-size: 11px;">${note}</td>
             </tr>
           `;
         }
@@ -504,25 +387,30 @@ const StudentReport = ({
             <thead>
               <tr>
                 <th style="width: 50px;">Ngày</th>
-                <th style="width: 50px;">Chuyên cần</th>
-                <th style="width: 55px;">% BTVN</th>
-                <th style="width: 100px;">Tên bài KT</th>
-                <th style="width: 45px;">Điểm</th>
-                <th style="width: 50px;">Điểm thưởng</th>
-                <th>Nhận xét</th>
+                <th style="width: 60px;">Chuyên cần</th>
+                <th style="width: 60px;">% BTVN</th>
+                <th style="width: 120px;">Tên bài KT</th>
+                <th style="width: 50px;">Điểm</th>
+                <th style="width: 70px;">Điểm thưởng</th>
               </tr>
             </thead>
             <tbody>
               ${tableRows}
             </tbody>
           </table>
+          ${subjectComment ? `
+          <div class="subject-comment">
+            <div class="comment-label">📝 Nhận xét:</div>
+            <div class="comment-content">${subjectComment.replace(/\n/g, "<br/>")}</div>
+          </div>
+          ` : ''}
         </div>
       `;
     });
 
     return `
       <div class="report-header">
-        <h1>BÁO CÁO THEO THÁNG ${selectedMonth?.format("MM/YYYY") || ""}</h1>
+        <h1>BÁO CÁO HỌC TẬP THÁNG ${selectedMonth?.format("MM/YYYY") || ""}</h1>
         <p>Ngày xuất: ${dayjs().format("DD/MM/YYYY HH:mm")}</p>
       </div>
 
@@ -568,13 +456,6 @@ const StudentReport = ({
         <div class="section-title">Bảng điểm theo môn</div>
         ${scoreTablesHTML || '<p style="color: #999; text-align: center;">Không có dữ liệu điểm trong tháng này</p>'}
       </div>
-
-      ${aiComment ? `
-      <div class="section">
-        <div class="section-title">📝 Nhận xét tổng quát tháng ${selectedMonth?.format("MM/YYYY") || ""}</div>
-        <div class="comment-box">${aiComment.replace(/\n/g, "<br/>")}</div>
-      </div>
-      ` : ""}
 
       <div class="section">
         <div class="section-title">Lịch sử học tập chi tiết</div>
@@ -709,13 +590,6 @@ const StudentReport = ({
           </div>
         </div>
       </div>
-
-      ${aiComment ? `
-      <div class="section">
-        <div class="section-title">Nhận xét học sinh</div>
-        <div class="comment-box">${aiComment.replace(/\n/g, "<br/>")}</div>
-      </div>
-      ` : ""}
 
       <div class="section">
         <div class="section-title">Lịch sử học tập chi tiết</div>
@@ -1252,6 +1126,25 @@ const StudentReport = ({
           color: #333;
           font-weight: 600;
         }
+        .subject-comment {
+          margin-top: 10px;
+          padding: 12px 15px;
+          background: rgba(240, 250, 235, 0.4);
+          border-left: 4px solid rgba(82, 196, 26, 0.7);
+          border-radius: 4px;
+        }
+        .subject-comment .comment-label {
+          font-weight: bold;
+          font-size: 13px;
+          color: #389e0d;
+          margin-bottom: 6px;
+        }
+        .subject-comment .comment-content {
+          font-size: 13px;
+          line-height: 1.6;
+          color: #333;
+          white-space: pre-wrap;
+        }
         .footer {
           margin-top: 40px;
           text-align: center;
@@ -1270,29 +1163,39 @@ const StudentReport = ({
         }
         .watermark-logo {
           position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
           z-index: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
           pointer-events: none;
         }
         .watermark-logo img {
-          width: auto;
-          height: 520px;
-          max-width: 520px;
+          width: 600px;
+          height: 600px;
+          max-width: 75vw;
           object-fit: contain;
-          opacity: 0.18;
-          filter: grayscale(50%);
+          opacity: 0.22;
+          filter: grayscale(30%);
           user-select: none;
           pointer-events: none;
         }
         .report-content {
           position: relative;
           z-index: 1;
+        }
+        @media print {
+          .watermark-logo {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+          }
+          .watermark-logo img {
+            width: 650px;
+            height: 650px;
+            opacity: 0.25;
+            filter: grayscale(30%);
+          }
         }
       </style>
     `;
@@ -1334,19 +1237,6 @@ const StudentReport = ({
       footer={[
         <Button key="close" onClick={handleClose}>
           Đóng
-        </Button>,
-        <Button
-          key="ai-comment"
-          icon={<RobotOutlined />}
-          onClick={handleGenerateComment}
-          loading={isGenerating}
-          style={{
-            backgroundColor: "#52c41a",
-            borderColor: "#52c41a",
-            color: "white",
-          }}
-        >
-          Tạo nhận xét AI
         </Button>,
         <Button
           key="print"
@@ -1489,60 +1379,6 @@ const StudentReport = ({
           </Row>
         </Card>
 
-        {/* AI Comment Section - Editable Textarea */}
-        <Card
-          title={
-            <span>
-              <RobotOutlined style={{ marginRight: 8, color: "#52c41a" }} />
-              Nhận xét học sinh
-            </span>
-          }
-          size="small"
-          style={{ marginBottom: 16 }}
-        >
-          {isGenerating && (
-            <div
-              style={{
-                textAlign: "center",
-                padding: "20px 0",
-                marginBottom: 16,
-              }}
-            >
-              <Spin />
-              <p style={{ marginTop: 16, color: "#666" }}>
-                Đang phân tích dữ liệu và tạo nhận xét...
-              </p>
-            </div>
-          )}
-
-          {/* Show error message */}
-          {commentError && (
-            <Alert
-              message="Lỗi tạo nhận xét AI"
-              description={commentError}
-              type="warning"
-              showIcon
-              closable
-              onClose={() => setCommentError("")}
-              style={{ marginBottom: 16 }}
-            />
-          )}
-
-          {/* Editable Textarea */}
-          <Input.TextArea
-            value={aiComment}
-            onChange={(e) => setAiComment(e.target.value)}
-            placeholder="Nhập nhận xét về học sinh hoặc nhấn nút 'Tạo nhận xét AI' để tự động tạo..."
-            rows={8}
-            style={{
-              fontSize: "14px",
-              lineHeight: "1.8",
-            }}
-            showCount
-            maxLength={2000}
-          />
-        </Card>
-
         {/* Score Table by Subject */}
         <Card 
           title={
@@ -1592,6 +1428,9 @@ const StudentReport = ({
                   const sortedSessions = [...subjectSessions].sort(
                     (a, b) => new Date(a["Ngày"]).getTime() - new Date(b["Ngày"]).getTime()
                   );
+                  
+                  // Get comment for this subject
+                  const subjectComment = getClassComment(subject);
 
                   return (
                     <div key={subject} style={{ marginBottom: 24 }}>
@@ -1613,13 +1452,11 @@ const StudentReport = ({
                           <thead>
                             <tr style={{ background: "#f0f0f0" }}>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Ngày</th>
-                              <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Tên HS</th>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Chuyên cần</th>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>% BTVN</th>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Tên bài kiểm tra</th>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Điểm</th>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Điểm thưởng</th>
-                              <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Nhận xét</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1643,9 +1480,6 @@ const StudentReport = ({
                                     {dayjs(session["Ngày"]).format("DD/MM/YYYY")}
                                   </td>
                                   <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
-                                    {student["Họ và tên"]}
-                                  </td>
-                                  <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
                                     {attendance}
                                   </td>
                                   <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
@@ -1660,15 +1494,29 @@ const StudentReport = ({
                                   <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
                                     {studentRecord["Điểm thưởng"] ?? "-"}
                                   </td>
-                                  <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "left", paddingLeft: "12px" }}>
-                                    {studentRecord["Ghi chú"] || "-"}
-                                  </td>
                                 </tr>
                               );
                             })}
                           </tbody>
                         </table>
                       </div>
+                      {/* Subject Comment */}
+                      {subjectComment && (
+                        <div style={{
+                          marginTop: 10,
+                          padding: "12px 15px",
+                          background: "rgba(240, 250, 235, 0.4)",
+                          borderLeft: "4px solid rgba(82, 196, 26, 0.7)",
+                          borderRadius: 4
+                        }}>
+                          <div style={{ fontWeight: "bold", fontSize: 13, color: "#389e0d", marginBottom: 6 }}>
+                            📝 Nhận xét:
+                          </div>
+                          <div style={{ fontSize: 13, lineHeight: 1.6, color: "#333", whiteSpace: "pre-wrap" }}>
+                            {subjectComment}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

@@ -11,6 +11,8 @@ import {
   IconReceipt,
   IconSchool,
   IconCurrencyDollar,
+  IconFileReport,
+  IconChecklist,
 } from "@tabler/icons-react";
 import * as React from "react";
 import { NavDocuments } from "@/components/NavDocument";
@@ -84,6 +86,18 @@ const data = {
       url: "/workspace/my-classes",
       icon: IconSchool,
       teacherOnly: true,
+    },
+    {
+      title: "Báo cáo tháng",
+      url: "/workspace/monthly-report",
+      icon: IconFileReport,
+      teacherOnly: true,
+    },
+    {
+      title: "Duyệt báo cáo",
+      url: "/workspace/monthly-report-review",
+      icon: IconChecklist,
+      adminOnly: true,
     },
   ],
 

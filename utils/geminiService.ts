@@ -25,6 +25,7 @@ export interface StudentReportData {
         homework?: string;
         note?: string;
     }>;
+    additionalInfo?: string; // Thông tin bổ sung (các lớp học, điểm thưởng...)
 }
 
 export async function generateStudentComment(reportData: StudentReportData): Promise<string> {
@@ -53,6 +54,8 @@ Các buổi gần đây:
 ${reportData.recentSessions?.slice(0, 5).map((s, i) =>
   `${i + 1}. ${s.date}: ${s.status}${s.score ? `, điểm ${s.score}` : ''}`
 ).join('\n')}
+
+${reportData.additionalInfo ? `Thông tin bổ sung: ${reportData.additionalInfo}` : ''}
 
 Nội dung nhận xét gồm: thái độ, kết quả học tập, điểm mạnh, điểm cần cải thiện, lời khuyên.
 Kết thúc bằng một câu động viên ngắn gọn.`;
