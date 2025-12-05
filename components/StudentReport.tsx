@@ -1264,6 +1264,36 @@ const StudentReport = ({
           body { margin: 0; }
           .no-print { display: none; }
         }
+        .watermark-container {
+          position: relative;
+          min-height: 100vh;
+        }
+        .watermark-logo {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          z-index: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          pointer-events: none;
+        }
+        .watermark-logo img {
+          width: auto;
+          height: 520px;
+          max-width: 520px;
+          object-fit: contain;
+          opacity: 0.18;
+          filter: grayscale(50%);
+          user-select: none;
+          pointer-events: none;
+        }
+        .report-content {
+          position: relative;
+          z-index: 1;
+        }
       </style>
     `;
 
@@ -1275,7 +1305,14 @@ const StudentReport = ({
           ${styles}
         </head>
         <body>
-          ${content}
+          <div class="watermark-container">
+            <div class="watermark-logo">
+              <img src="/img/logo.png" alt="Background Logo" />
+            </div>
+            <div class="report-content">
+              ${content}
+            </div>
+          </div>
         </body>
       </html>
     `);

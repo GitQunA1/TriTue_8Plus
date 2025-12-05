@@ -1708,25 +1708,13 @@ const InvoicePage = () => {
 
           <div style="display: flex; gap: 24px; align-items: flex-start;">
             <div style="flex: 1; padding-right: 10px;">
-              <p style="color: #c40000; font-weight: 700; font-size: 16px; margin: 6px 0;">Họ và tên: ${invoice.studentName}</p>
-              <p style="margin: 6px 0;"><strong>Khối:</strong> ${grade}</p>
-              <p style="margin: 6px 0;"><strong>Môn học:</strong> ${
-                subjectMap[subjects] ||
-                subjects
-                  .split(",")
-                  .map((item) => subjectMap[item.trim()] || item)
-                  .join(", ")
-              }</p>
-              <p style="margin: 6px 0;"><strong>Tổng học phí:</strong> ${invoice.totalAmount.toLocaleString("vi-VN")} đ</p>
-              <p style="margin: 6px 0;"><strong>Nợ học phí:</strong> ${totalDebt.toLocaleString("vi-VN")} đ</p>
-              <p style="margin: 6px 0;"><strong>Miễn giảm học phí:</strong> ${invoice.discount ? invoice.discount.toLocaleString("vi-VN") + " đ" : "0 đ"}</p>
-              <p style="margin: 10px 0; color: #c40000; font-weight: 700; font-size: 18px;">Học phí thực: ${invoice.finalAmount.toLocaleString("vi-VN")} đ</p>
+              <p style="color: #c40000; font-weight: 700; font-size: 16px; margin: 6px 0;">Họ và tên: ${invoice.studentName} &nbsp;&nbsp;&nbsp; <span style="color: #333; font-weight: 500;">Khối: ${grade}</span></p>
 
-              ${debtDetailsHtml}
               ${currentMonthHtml}
-              <div style="margin:16px 0; padding:12px 16px; border:2px solid #c40000; border-radius:8px;">
-                <p style="margin:0; color:#c40000; font-size:18px; font-weight:700; text-align:center;">TỔNG PHẢI THU (Nợ trước + Tháng ${invoice.month + 1})</p>
-                <p style="margin:6px 0 0 0; color:#c40000; font-size:26px; font-weight:700; text-align:center;">${combinedTotalDue.toLocaleString("vi-VN")} đ</p>
+              ${debtDetailsHtml}
+              <div style="margin:16px 0; padding:10px 14px; border:2px solid #c40000; border-radius:8px;">
+                <p style="margin:0; color:#c40000; font-size:15px; font-weight:700; text-align:center;">TỔNG PHẢI THU (Nợ trước + Tháng ${invoice.month + 1})</p>
+                <p style="margin:4px 0 0 0; color:#c40000; font-size:22px; font-weight:700; text-align:center;">${combinedTotalDue.toLocaleString("vi-VN")} đ</p>
               </div>
               <p style="margin-top: 12px;"><strong>Ghi chú:</strong> ${(invoice as any).note || ""}</p>
 
