@@ -431,6 +431,95 @@ const StudentReport = ({
         ? ((presentCount / filteredSessions.length) * 100).toFixed(1)
         : "0";
 
+    // Group sessions by subject for score table
+    const sessionsBySubject: { [subject: string]: AttendanceSession[] } = {};
+    filteredSessions.forEach((session) => {
+      const subject = session["Tên lớp"]?.split(" - ")[0] || "Chưa phân loại";
+      if (!sessionsBySubject[subject]) {
+        sessionsBySubject[subject] = [];
+      }
+      sessionsBySubject[subject].push(session);
+    });
+
+    // Generate score tables by subject
+    let scoreTablesHTML = "";
+    Object.entries(sessionsBySubject).forEach(([subject, subjectSessions]) => {
+      const sortedSessions = [...subjectSessions].sort(
+        (a, b) => new Date(a["Ngày"]).getTime() - new Date(b["Ngày"]).getTime()
+      );
+
+      // Calculate subject stats
+      let subjectScores: number[] = [];
+      sortedSessions.forEach((session) => {
+        const record = session["Điểm danh"]?.find(r => r["Student ID"] === student.id);
+        if (record?.["Điểm"] !== null && record?.["Điểm"] !== undefined) {
+          subjectScores.push(record["Điểm"]);
+        }
+      });
+      const subjectAvg = subjectScores.length > 0 
+        ? (subjectScores.reduce((a, b) => a + b, 0) / subjectScores.length).toFixed(1)
+        : "-";
+
+      let tableRows = "";
+      sortedSessions.forEach((session) => {
+        const studentRecord = session["Điểm danh"]?.find(
+          (r) => r["Student ID"] === student.id
+        );
+        
+        if (studentRecord) {
+          const date = dayjs(session["Ngày"]).format("DD/MM");
+          const attendance = studentRecord["Có mặt"] 
+            ? (studentRecord["Đi muộn"] ? "Muộn" : "✓")
+            : (studentRecord["Vắng có phép"] ? "P" : "✗");
+          const attendanceColor = studentRecord["Có mặt"] 
+            ? (studentRecord["Đi muộn"] ? "#fa8c16" : "#52c41a")
+            : (studentRecord["Vắng có phép"] ? "#1890ff" : "#f5222d");
+          const homeworkPercent = studentRecord["% Hoàn thành BTVN"] ?? "-";
+          const testName = studentRecord["Bài kiểm tra"] || "-";
+          const score = studentRecord["Điểm kiểm tra"] ?? studentRecord["Điểm"] ?? "-";
+          const bonusScore = studentRecord["Điểm thưởng"] ?? "-";
+          const note = studentRecord["Ghi chú"] || "-";
+
+          tableRows += `
+            <tr>
+              <td style="text-align: center;">${date}</td>
+              <td style="text-align: center; color: ${attendanceColor}; font-weight: bold;">${attendance}</td>
+              <td style="text-align: center;">${homeworkPercent}</td>
+              <td style="text-align: left; font-size: 11px;">${testName}</td>
+              <td style="text-align: center; font-weight: bold;">${score}</td>
+              <td style="text-align: center;">${bonusScore}</td>
+              <td style="text-align: left; font-size: 11px;">${note}</td>
+            </tr>
+          `;
+        }
+      });
+
+      scoreTablesHTML += `
+        <div class="subject-section">
+          <div class="subject-header">
+            <span class="subject-name">📚 ${subject}</span>
+            <span class="subject-avg">TB: <strong>${subjectAvg}</strong></span>
+          </div>
+          <table class="score-table">
+            <thead>
+              <tr>
+                <th style="width: 50px;">Ngày</th>
+                <th style="width: 50px;">Chuyên cần</th>
+                <th style="width: 55px;">% BTVN</th>
+                <th style="width: 100px;">Tên bài KT</th>
+                <th style="width: 45px;">Điểm</th>
+                <th style="width: 50px;">Điểm thưởng</th>
+                <th>Nhận xét</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${tableRows}
+            </tbody>
+          </table>
+        </div>
+      `;
+    });
+
     return `
       <div class="report-header">
         <h1>BÁO CÁO THEO THÁNG ${selectedMonth?.format("MM/YYYY") || ""}</h1>
@@ -475,9 +564,14 @@ const StudentReport = ({
         </div>
       </div>
 
+      <div class="section">
+        <div class="section-title">Bảng điểm theo môn</div>
+        ${scoreTablesHTML || '<p style="color: #999; text-align: center;">Không có dữ liệu điểm trong tháng này</p>'}
+      </div>
+
       ${aiComment ? `
       <div class="section">
-        <div class="section-title">Nhận xét học sinh</div>
+        <div class="section-title">📝 Nhận xét tổng quát tháng ${selectedMonth?.format("MM/YYYY") || ""}</div>
         <div class="comment-box">${aiComment.replace(/\n/g, "<br/>")}</div>
       </div>
       ` : ""}
@@ -1120,6 +1214,43 @@ const StudentReport = ({
           white-space: pre-wrap;
           font-size: 14px;
           line-height: 1.7;
+        }
+        .subject-section {
+          margin-bottom: 20px;
+        }
+        .subject-header {
+          background: linear-gradient(135deg, #e6f7ff 0%, #bae7ff 100%);
+          padding: 10px 15px;
+          border-left: 4px solid #1890ff;
+          border-radius: 4px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 8px;
+        }
+        .subject-name {
+          font-weight: bold;
+          font-size: 14px;
+          color: #004aad;
+        }
+        .subject-avg {
+          font-size: 13px;
+          color: #666;
+        }
+        .score-table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 0;
+        }
+        .score-table th, .score-table td {
+          border: 1px solid #d9d9d9;
+          padding: 6px 8px;
+          font-size: 12px;
+        }
+        .score-table th {
+          background-color: #fafafa;
+          color: #333;
+          font-weight: 600;
         }
         .footer {
           margin-top: 40px;
