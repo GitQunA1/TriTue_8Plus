@@ -30,6 +30,16 @@ interface Student {
   "Mã học sinh": string;
 }
 
+interface TimetableEntry {
+  id: string;
+  "Class ID": string;
+  "Ngày": string;
+  "Thứ": number;
+  "Giờ bắt đầu": string;
+  "Giờ kết thúc": string;
+  "Phòng học"?: string;
+}
+
 const AttendanceSessionPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -61,6 +71,29 @@ const AttendanceSessionPage = () => {
   const [isEditRedeemModalOpen, setIsEditRedeemModalOpen] = useState(false);
   const [editingRedeem, setEditingRedeem] = useState<any | null>(null);
   const [editRedeemForm] = Form.useForm();
+  const [customSchedule, setCustomSchedule] = useState<TimetableEntry | null>(null);
+  const [isEditingMode, setIsEditingMode] = useState(false); // Chế độ sửa điểm danh sau khi hoàn thành
+
+  // Load custom schedule from Thời_khoá_biểu
+  useEffect(() => {
+    if (!classData?.id || !sessionDate) return;
+
+    const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+    const unsubscribe = onValue(timetableRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const entry = Object.entries(data).find(([, value]: [string, any]) => 
+          value["Class ID"] === classData.id && value["Ngày"] === sessionDate
+        );
+        if (entry) {
+          setCustomSchedule({ id: entry[0], ...(entry[1] as Omit<TimetableEntry, "id">) });
+        } else {
+          setCustomSchedule(null);
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, [classData?.id, sessionDate]);
 
   useEffect(() => {
     if (!classData) {
@@ -70,6 +103,7 @@ const AttendanceSessionPage = () => {
     }
 
     // Check if session already exists for this class and date (only completed sessions)
+    // Chỉ load một lần khi component mount, không dùng realtime listener
     const sessionsRef = ref(database, "datasheet/Điểm_danh_sessions");
     const unsubscribeSession = onValue(sessionsRef, (snapshot) => {
       const data = snapshot.val();
@@ -88,18 +122,22 @@ const AttendanceSessionPage = () => {
         );
 
         if (existing) {
-          setExistingSession(existing);
-          setSessionId(existing.id);
-          setAttendanceRecords(existing["Điểm danh"] || []);
-          setHomeworkDescription(existing["Bài tập"]?.["Mô tả"] || "");
-          setTotalExercises(existing["Bài tập"]?.["Tổng số bài"] || 0);
-          setCurrentStep(1); // Go to step 2 to view/edit
+          // Chỉ update nếu chưa có existingSession hoặc sessionId khác
+          // Tránh ghi đè khi đang edit
+          if (!existingSession || existingSession.id !== existing.id) {
+            setExistingSession(existing);
+            setSessionId(existing.id);
+            setAttendanceRecords(existing["Điểm danh"] || []);
+            setHomeworkDescription(existing["Bài tập"]?.["Mô tả"] || "");
+            setTotalExercises(existing["Bài tập"]?.["Tổng số bài"] || 0);
+            setCurrentStep(1); // Go to step 2 to view/edit
+          }
         }
       }
       setLoadingSession(false);
-    });
+    }, { onlyOnce: true }); // Chỉ load một lần
 
-    // Load students
+    // Load students - chỉ load một lần
     const studentsRef = ref(database, "datasheet/Danh_sách_học_sinh");
     const unsubscribeStudents = onValue(studentsRef, (snapshot) => {
       const data = snapshot.val();
@@ -114,26 +152,31 @@ const AttendanceSessionPage = () => {
         );
 
         setStudents(classStudents);
-
-        // Initialize attendance records only if no existing session
-        if (!existingSession) {
-          setAttendanceRecords(
-            classStudents.map((s) => ({
-              "Student ID": s.id,
-              "Tên học sinh": s["Họ và tên"],
-              "Có mặt": false,
-              "Ghi chú": "",
-            }))
-          );
-        }
       }
-    });
+    }, { onlyOnce: true }); // Chỉ load một lần
 
     return () => {
       unsubscribeSession();
       unsubscribeStudents();
     };
-  }, [classData, navigate, sessionDate, existingSession]);
+  }, [classData, navigate, sessionDate]); // Bỏ existingSession khỏi dependency
+
+  // Initialize attendance records khi students được load và chưa có existing session
+  useEffect(() => {
+    if (students.length > 0 && !existingSession && attendanceRecords.length === 0) {
+      setAttendanceRecords(
+        students.map((s) => ({
+          "Student ID": s.id,
+          "Tên học sinh": s["Họ và tên"],
+          "Có mặt": false,
+          "Ghi chú": "",
+        }))
+      );
+    }
+  }, [students, existingSession, attendanceRecords.length]);
+
+  // Chế độ chỉ đọc: session đã hoàn thành và chưa bật chế độ sửa
+  const isReadOnly = !!(existingSession && existingSession["Trạng thái"] === "completed" && !isEditingMode);
 
   const handleAttendanceChange = (studentId: string, present: boolean) => {
     setAttendanceRecords((prev) =>
@@ -585,11 +628,22 @@ const AttendanceSessionPage = () => {
   const handleCompleteSession = async () => {
     setSaving(true);
     try {
-      const todaySchedule = classData["Lịch học"]?.find((s) => {
-        const today = dayjs();
-        const todayDayOfWeek = today.day() === 0 ? 8 : today.day() + 1;
-        return s["Thứ"] === todayDayOfWeek;
-      });
+      // Get schedule info - prioritize custom schedule from Thời_khoá_biểu
+      let scheduleStartTime = "";
+      let scheduleEndTime = "";
+
+      if (customSchedule) {
+        // Use custom schedule from Thời_khoá_biểu
+        scheduleStartTime = customSchedule["Giờ bắt đầu"] || "";
+        scheduleEndTime = customSchedule["Giờ kết thúc"] || "";
+      } else {
+        // Fallback to default schedule from class
+        const sessionDayjs = dayjs(sessionDate);
+        const sessionDayOfWeek = sessionDayjs.day() === 0 ? 8 : sessionDayjs.day() + 1;
+        const defaultSchedule = classData["Lịch học"]?.find((s) => s["Thứ"] === sessionDayOfWeek);
+        scheduleStartTime = defaultSchedule?.["Giờ bắt đầu"] || "";
+        scheduleEndTime = defaultSchedule?.["Giờ kết thúc"] || "";
+      }
 
       const completionTime = new Date().toISOString();
       const completionPerson =
@@ -632,8 +686,8 @@ const AttendanceSessionPage = () => {
           "Tên lớp": classData["Tên lớp"],
           "Class ID": classData.id,
           Ngày: sessionDate,
-          "Giờ bắt đầu": todaySchedule?.["Giờ bắt đầu"] || "",
-          "Giờ kết thúc": todaySchedule?.["Giờ kết thúc"] || "",
+          "Giờ bắt đầu": scheduleStartTime,
+          "Giờ kết thúc": scheduleEndTime,
           "Giáo viên": userProfile?.displayName || userProfile?.email || "",
           "Teacher ID": userProfile?.teacherId || userProfile?.uid || "",
           "Trạng thái": "completed",
@@ -751,6 +805,7 @@ const AttendanceSessionPage = () => {
           <Checkbox
             checked={attendanceRecord?.["Có mặt"] || false}
             onChange={(e) => handleAttendanceChange(record.id, e.target.checked)}
+            disabled={isReadOnly}
           />
         );
       },
@@ -768,6 +823,7 @@ const AttendanceSessionPage = () => {
           <Checkbox
             checked={attendanceRecord?.["Đi muộn"] || false}
             onChange={(e) => handleLateChange(record.id, e.target.checked)}
+            disabled={isReadOnly}
           />
         );
       },
@@ -787,6 +843,7 @@ const AttendanceSessionPage = () => {
             onChange={(e) =>
               handleAbsentWithPermissionChange(record.id, e.target.checked)
             }
+            disabled={isReadOnly}
           />
         );
       },
@@ -824,6 +881,7 @@ const AttendanceSessionPage = () => {
                 }
               }}
               style={{ width: "50%" }}
+              disabled={isReadOnly}
             />
             <Input
               value={`/ ${total}`}
@@ -904,6 +962,7 @@ const AttendanceSessionPage = () => {
             value={attendanceRecord?.["Điểm thưởng"] ?? null}
             onChange={(value) => handleBonusPointsChange(record.id, value)}
             style={{ width: "100%" }}
+            disabled={isReadOnly}
           />
         );
       },
@@ -921,6 +980,7 @@ const AttendanceSessionPage = () => {
             placeholder="Ghi chú"
             value={attendanceRecord?.["Ghi chú"]}
             onChange={(e) => handleNoteChange(record.id, e.target.value)}
+            disabled={isReadOnly}
           />
         );
       },
@@ -968,18 +1028,41 @@ const AttendanceSessionPage = () => {
 
   return (
     <WrapperContent title="Điểm danh" isLoading={loadingSession}>
-      {existingSession && (
+      {existingSession && !isEditingMode && (
         <Card
           style={{
             marginBottom: 16,
-            backgroundColor: "#e6f7ff",
-            borderColor: "#91d5ff",
+            backgroundColor: "#f6ffed",
+            borderColor: "#b7eb8f",
+          }}
+          size="small"
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <p style={{ margin: 0 }}>
+              ✅ Buổi học này đã hoàn thành điểm danh. Bạn có thể sửa điểm danh nếu cần.
+            </p>
+            <Button
+              type="primary"
+              icon={<EditOutlined />}
+              onClick={() => setIsEditingMode(true)}
+            >
+              Sửa điểm danh
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {existingSession && isEditingMode && (
+        <Card
+          style={{
+            marginBottom: 16,
+            backgroundColor: "#fff7e6",
+            borderColor: "#ffd591",
           }}
           size="small"
         >
           <p style={{ margin: 0 }}>
-            ℹ️ Buổi học này đã được điểm danh trước đó. Bạn có thể xem lại hoặc
-            chỉnh sửa thông tin.
+            ✏️ Đang chỉnh sửa điểm danh. Nhấn "Cập nhật điểm danh" khi hoàn tất.
           </p>
         </Card>
       )}
@@ -1064,6 +1147,7 @@ const AttendanceSessionPage = () => {
                     placeholder="Nhập mô tả bài tập..."
                     value={homeworkDescription}
                     onChange={(e) => setHomeworkDescription(e.target.value)}
+                    disabled={isReadOnly}
                   />
                 </Form.Item>
                 <Form.Item label="Tổng số bài tập">
@@ -1073,6 +1157,7 @@ const AttendanceSessionPage = () => {
                     value={totalExercises}
                     onChange={(value) => setTotalExercises(value || 0)}
                     style={{ width: 200 }}
+                    disabled={isReadOnly}
                   />
                 </Form.Item>
               </Form>
@@ -1094,6 +1179,7 @@ const AttendanceSessionPage = () => {
                     value={commonTestName}
                     onChange={(e) => handleApplyCommonTestName(e.target.value)}
                     style={{ width: 400 }}
+                    disabled={isReadOnly}
                   />
                   {commonTestName && (
                     <Tag color="green">✓ Đã áp dụng cho {students.length} học sinh</Tag>
@@ -1114,15 +1200,31 @@ const AttendanceSessionPage = () => {
 
             <div style={{ marginTop: 16, textAlign: "right" }}>
               <Space>
-                <Button onClick={() => setCurrentStep(0)}>Quay lại</Button>
-                <Button
-                  type="primary"
-                  icon={<CheckOutlined />}
-                  onClick={handleCompleteSession}
-                  loading={saving}
-                >
-                  Hoàn thành buổi học
-                </Button>
+                <Button onClick={() => {
+                  if (isEditingMode) {
+                    setIsEditingMode(false);
+                  }
+                  setCurrentStep(0);
+                }}>Quay lại</Button>
+                {existingSession && isEditingMode ? (
+                  <Button
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    onClick={handleCompleteSession}
+                    loading={saving}
+                  >
+                    Cập nhật điểm danh
+                  </Button>
+                ) : !existingSession ? (
+                  <Button
+                    type="primary"
+                    icon={<CheckOutlined />}
+                    onClick={handleCompleteSession}
+                    loading={saving}
+                  >
+                    Hoàn thành buổi học
+                  </Button>
+                ) : null}
               </Space>
             </div>
           </div>

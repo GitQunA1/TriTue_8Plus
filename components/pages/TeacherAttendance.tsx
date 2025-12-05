@@ -16,6 +16,21 @@ import { subjectMap } from "@/utils/selectOptions";
 dayjs.extend(isSameOrAfter);
 dayjs.extend(isSameOrBefore);
 
+interface TimetableEntry {
+  id: string;
+  "Class ID": string;
+  "Mã lớp": string;
+  "Tên lớp": string;
+  "Ngày": string;
+  "Thứ": number;
+  "Giờ bắt đầu": string;
+  "Giờ kết thúc": string;
+  "Phòng học"?: string;
+  "Ghi chú"?: string;
+  "Thay thế ngày"?: string; // Ngày gốc bị thay thế (dùng khi di chuyển lịch)
+  "Thay thế thứ"?: number; // Thứ gốc bị thay thế
+}
+
 const TeacherAttendance = () => {
   const { userProfile } = useAuth();
   const { classes, loading } = useClasses();
@@ -24,6 +39,7 @@ const TeacherAttendance = () => {
   const [attendanceSessions, setAttendanceSessions] = useState<AttendanceSession[]>([]);
   const [selectedMonth, setSelectedMonth] = useState<Dayjs>(dayjs());
   const [loadingSessions, setLoadingSessions] = useState(true);
+  const [timetableEntries, setTimetableEntries] = useState<TimetableEntry[]>([]);
 
   const isAdmin = userProfile?.isAdmin === true || userProfile?.role === "admin";
   const teacherId =
@@ -70,10 +86,79 @@ const TeacherAttendance = () => {
     return () => unsubscribe();
   }, []);
 
+  // Load timetable entries from Thời_khoá_biểu (custom schedules)
+  useEffect(() => {
+    const timetableRef = ref(database, "datasheet/Thời_khoá_biểu");
+    const unsubscribe = onValue(timetableRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const entries = Object.entries(data).map(([id, value]: [string, any]) => ({
+          id,
+          ...value,
+        }));
+        setTimetableEntries(entries);
+      } else {
+        setTimetableEntries([]);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
   // Get today's day of week (2-8)
   const today = dayjs();
   const todayDayOfWeek = today.day() === 0 ? 8 : today.day() + 1; // Convert 0-6 to 2-8
   const todayDate = today.format("YYYY-MM-DD");
+
+  // Helper: Check if a class has custom schedule for today (from Thời_khoá_biểu)
+  const hasCustomScheduleToday = (classId: string): boolean => {
+    return timetableEntries.some(
+      (entry) => entry["Class ID"] === classId && entry["Ngày"] === todayDate
+    );
+  };
+
+  // Helper: Check if default schedule has been replaced/moved to another day
+  const isDefaultScheduleReplaced = (classId: string): boolean => {
+    return timetableEntries.some(
+      (entry) => 
+        entry["Class ID"] === classId && 
+        entry["Thay thế ngày"] === todayDate &&
+        entry["Thay thế thứ"] === todayDayOfWeek
+    );
+  };
+
+  // Helper: Get custom schedule for a class today
+  const getCustomScheduleToday = (classId: string): TimetableEntry | undefined => {
+    return timetableEntries.find(
+      (entry) => entry["Class ID"] === classId && entry["Ngày"] === todayDate
+    );
+  };
+
+  // Helper: Check if class has schedule for today (both default and custom)
+  const hasScheduleToday = (classData: Class): boolean => {
+    // Check custom schedule first
+    if (hasCustomScheduleToday(classData.id)) {
+      return true;
+    }
+    
+    // Check default schedule (but only if not replaced/moved)
+    if (isDefaultScheduleReplaced(classData.id)) {
+      return false; // Default schedule was moved to another day
+    }
+    
+    return classData["Lịch học"]?.some(
+      (schedule) => schedule["Thứ"] === todayDayOfWeek
+    ) || false;
+  };
+
+  // Helper: Get schedule time for a class today
+  const getScheduleTimeToday = (classData: Class): string => {
+    const customSchedule = getCustomScheduleToday(classData.id);
+    if (customSchedule) {
+      return customSchedule["Giờ bắt đầu"] || "";
+    }
+    const defaultSchedule = classData["Lịch học"]?.find((s) => s["Thứ"] === todayDayOfWeek);
+    return defaultSchedule?.["Giờ bắt đầu"] || "";
+  };
 
   // Filter classes - Admin sees all classes, teachers see only their classes
   const myClasses = classes.filter((c) => {
@@ -101,19 +186,15 @@ const TeacherAttendance = () => {
     return match && isWithinDateRange && c["Trạng thái"] === "active";
   });
 
-  // Get today's classes (classes that have schedule for today)
+  // Get today's classes (classes that have schedule for today - including custom schedules)
   const todayClasses = myClasses
-    .filter((c) => {
-      return c["Lịch học"]?.some(
-        (schedule) => schedule["Thứ"] === todayDayOfWeek
-      );
-    })
+    .filter((c) => hasScheduleToday(c))
     .sort((a, b) => {
-      // Sort by start time
-      const aSchedule = a["Lịch học"]?.find((s) => s["Thứ"] === todayDayOfWeek);
-      const bSchedule = b["Lịch học"]?.find((s) => s["Thứ"] === todayDayOfWeek);
-      if (!aSchedule || !bSchedule) return 0;
-      return aSchedule["Giờ bắt đầu"].localeCompare(bSchedule["Giờ bắt đầu"]);
+      // Sort by start time (use helper to get correct time from custom or default schedule)
+      const aTime = getScheduleTimeToday(a);
+      const bTime = getScheduleTimeToday(b);
+      if (!aTime || !bTime) return 0;
+      return aTime.localeCompare(bTime);
     });
 
   // Get other classes - chỉ hiển thị lớp có lịch học hôm nay (nhưng không phải lớp của giáo viên này nếu không phải admin)
@@ -122,9 +203,6 @@ const TeacherAttendance = () => {
       // Admin: hiển thị tất cả lớp có lịch hôm nay (trừ lớp đã hiển thị ở "Lớp học hôm nay")
       return classes
         .filter((c) => {
-          const hasTodaySchedule = c["Lịch học"]?.some(
-            (schedule) => schedule["Thứ"] === todayDayOfWeek
-          );
           const isActive = c["Trạng thái"] === "active";
           const startDate = c["Ngày bắt đầu"] ? dayjs(c["Ngày bắt đầu"]) : null;
           const endDate = c["Ngày kết thúc"] ? dayjs(c["Ngày kết thúc"]) : null;
@@ -132,22 +210,19 @@ const TeacherAttendance = () => {
             (!startDate || today.isSameOrAfter(startDate, "day")) &&
             (!endDate || today.isSameOrBefore(endDate, "day"));
           
-          return hasTodaySchedule && isActive && isWithinDateRange;
+          return hasScheduleToday(c) && isActive && isWithinDateRange;
         })
         .filter((c) => !todayClasses.some((tc) => tc.id === c.id)) // Loại bỏ lớp đã hiển thị ở "Lớp học hôm nay"
         .sort((a, b) => {
-          const aSchedule = a["Lịch học"]?.find((s) => s["Thứ"] === todayDayOfWeek);
-          const bSchedule = b["Lịch học"]?.find((s) => s["Thứ"] === todayDayOfWeek);
-          if (!aSchedule || !bSchedule) return 0;
-          return aSchedule["Giờ bắt đầu"].localeCompare(bSchedule["Giờ bắt đầu"]);
+          const aTime = getScheduleTimeToday(a);
+          const bTime = getScheduleTimeToday(b);
+          if (!aTime || !bTime) return 0;
+          return aTime.localeCompare(bTime);
         });
     } else {
       // Giáo viên: hiển thị lớp có lịch hôm nay nhưng không phải lớp của giáo viên này
       return classes
         .filter((c) => {
-          const hasTodaySchedule = c["Lịch học"]?.some(
-            (schedule) => schedule["Thứ"] === todayDayOfWeek
-          );
           const isNotMyClass = c["Teacher ID"] !== teacherId;
           const isActive = c["Trạng thái"] === "active";
           const startDate = c["Ngày bắt đầu"] ? dayjs(c["Ngày bắt đầu"]) : null;
@@ -156,16 +231,16 @@ const TeacherAttendance = () => {
             (!startDate || today.isSameOrAfter(startDate, "day")) &&
             (!endDate || today.isSameOrBefore(endDate, "day"));
           
-          return hasTodaySchedule && isNotMyClass && isActive && isWithinDateRange;
+          return hasScheduleToday(c) && isNotMyClass && isActive && isWithinDateRange;
         })
         .sort((a, b) => {
-          const aSchedule = a["Lịch học"]?.find((s) => s["Thứ"] === todayDayOfWeek);
-          const bSchedule = b["Lịch học"]?.find((s) => s["Thứ"] === todayDayOfWeek);
-          if (!aSchedule || !bSchedule) return 0;
-          return aSchedule["Giờ bắt đầu"].localeCompare(bSchedule["Giờ bắt đầu"]);
+          const aTime = getScheduleTimeToday(a);
+          const bTime = getScheduleTimeToday(b);
+          if (!aTime || !bTime) return 0;
+          return aTime.localeCompare(bTime);
         });
     }
-  }, [classes, todayClasses, todayDayOfWeek, isAdmin, teacherId, today]);
+  }, [classes, todayClasses, todayDayOfWeek, isAdmin, teacherId, today, timetableEntries]);
 
   const handleStartAttendance = (classData: Class) => {
     navigate(`/workspace/attendance/session/${classData.id}`, {
