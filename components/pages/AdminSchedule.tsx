@@ -822,14 +822,7 @@ const AdminSchedule = () => {
       return;
     }
 
-    // Nếu đây là lịch bù (có scheduleId), di chuyển trực tiếp không cần hỏi
-    if (draggingEvent.isCustomSchedule && draggingEvent.scheduleId) {
-      await moveScheduleThisDateOnly(draggingEvent, targetDate);
-      setDraggingEvent(null);
-      return;
-    }
-
-    // Nếu là lịch mặc định, hỏi người dùng muốn di chuyển tất cả hay chỉ ngày này
+    // Luôn hỏi người dùng muốn di chuyển tất cả hay chỉ ngày này
     setPendingAction({ event: draggingEvent, targetDate });
     setConfirmModalType('drag');
     setConfirmModalVisible(true);
