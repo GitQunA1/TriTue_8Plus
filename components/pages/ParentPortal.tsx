@@ -38,6 +38,7 @@ import {
   BarChartOutlined,
   DownloadOutlined,
   GiftOutlined,
+  StarOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useNavigate } from "react-router-dom";
@@ -1211,21 +1212,10 @@ const ParentPortal: React.FC = () => {
           <Col xs={24} sm={12} md={6}>
             <Card>
               <Statistic
-                title="Tổng điểm tích lũy"
-                value={stats.totalBonusPoints}
-                valueStyle={{ color: "#722ed1" }}
-                prefix={<GiftOutlined />}
-                suffix="điểm"
-              />
-            </Card>
-          </Col>
-          <Col xs={24} sm={12} md={6}>
-            <Card>
-              <Statistic
-                title="Đã đổi thưởng"
+                title="Sao đã đổi thưởng"
                 value={stats.redeemedBonusPoints}
                 valueStyle={{ color: "#ff4d4f" }}
-                prefix={<CheckCircleOutlined />}
+                prefix={<StarOutlined />}
                 suffix="điểm"
               />
             </Card>
@@ -1233,10 +1223,10 @@ const ParentPortal: React.FC = () => {
           <Col xs={24} sm={12} md={6}>
             <Card>
               <Statistic
-                title="Điểm còn lại"
+                title="Số sao hiện có"
                 value={stats.totalBonusPoints - stats.redeemedBonusPoints}
                 valueStyle={{ color: "#52c41a" }}
-                prefix={<GiftOutlined />}
+                prefix={<StarOutlined />}
                 suffix="điểm"
               />
             </Card>
