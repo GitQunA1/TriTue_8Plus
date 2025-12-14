@@ -115,6 +115,12 @@ export interface HomeworkAssignment {
     "Tổng số bài": number; // Total exercises
     "Người giao": string; // Assigned by
     "Thời gian giao": string; // Assignment time
+    "Tài liệu đính kèm"?: Array<{
+        name: string;
+        url: string;
+        type: string;
+        uploadedAt: string;
+    }>; // Attached documents
 }
 
 // Course Management Types

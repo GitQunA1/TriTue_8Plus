@@ -14,8 +14,11 @@ import {
   Tag,
   Popconfirm,
   Empty,
+  Upload,
+  List,
+  TimePicker,
 } from "antd";
-import { SaveOutlined, CheckOutlined, GiftOutlined, HistoryOutlined, EditOutlined, DeleteOutlined, ClockCircleOutlined, LoginOutlined, LogoutOutlined } from "@ant-design/icons";
+import { SaveOutlined, CheckOutlined, GiftOutlined, HistoryOutlined, EditOutlined, DeleteOutlined, ClockCircleOutlined, LoginOutlined, LogoutOutlined, UploadOutlined, PaperClipOutlined, FileOutlined } from "@ant-design/icons";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ref, onValue, push, set, update, remove } from "firebase/database";
 import { database } from "../../firebase";
@@ -23,6 +26,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { Class, AttendanceSession, AttendanceRecord } from "../../types";
 import dayjs from "dayjs";
 import WrapperContent from "@/components/WrapperContent";
+import { uploadToCloudinary, generateFolderPath } from "@/utils/cloudinaryStorage";
 
 interface Student {
   id: string;
@@ -74,6 +78,29 @@ const AttendanceSessionPage = () => {
   const [editRedeemForm] = Form.useForm();
   const [customSchedule, setCustomSchedule] = useState<TimetableEntry | null>(null);
   const [isEditingMode, setIsEditingMode] = useState(false); // Chế độ sửa điểm danh sau khi hoàn thành
+  
+  // Bug 8: State cho tài liệu đính kèm bài tập
+  const [homeworkAttachments, setHomeworkAttachments] = useState<Array<{
+    name: string;
+    url: string;
+    type: string;
+    uploadedAt: string;
+  }>>([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  
+  // Bug 9: State cho bài tập buổi trước
+  const [previousHomework, setPreviousHomework] = useState<{
+    description: string;
+    totalExercises: number;
+    attachments?: any[];
+    date: string;
+  } | null>(null);
+  
+  // Bug 13: State cho editing check-in/out time
+  const [editingCheckTime, setEditingCheckTime] = useState<{
+    studentId: string;
+    field: "Giờ check-in" | "Giờ check-out";
+  } | null>(null);
 
   // Load custom schedule from Thời_khoá_biểu
   useEffect(() => {
@@ -131,6 +158,8 @@ const AttendanceSessionPage = () => {
             setAttendanceRecords(existing["Điểm danh"] || []);
             setHomeworkDescription(existing["Bài tập"]?.["Mô tả"] || "");
             setTotalExercises(existing["Bài tập"]?.["Tổng số bài"] || 0);
+            // Bug 8: Load tài liệu đính kèm từ session hiện tại
+            setHomeworkAttachments(existing["Bài tập"]?.["Tài liệu đính kèm"] || []);
             setCurrentStep(1); // Go to step 2 to view/edit
           }
         }
@@ -161,6 +190,103 @@ const AttendanceSessionPage = () => {
       unsubscribeStudents();
     };
   }, [classData, navigate, sessionDate]); // Bỏ existingSession khỏi dependency
+
+  // Bug 9: Load bài tập buổi trước
+  useEffect(() => {
+    if (!classData?.id) return;
+
+    const sessionsRef = ref(database, "datasheet/Điểm_danh_sessions");
+    onValue(sessionsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        // Lấy tất cả sessions của lớp này
+        const classSessions = Object.entries(data)
+          .map(([id, value]: [string, any]) => ({
+            id,
+            ...value,
+          }))
+          .filter((s) => 
+            s["Class ID"] === classData.id && 
+            s["Trạng thái"] === "completed" &&
+            s["Ngày"] < sessionDate // Chỉ lấy buổi trước
+          )
+          .sort((a, b) => b["Ngày"].localeCompare(a["Ngày"])); // Sắp xếp giảm dần
+
+        if (classSessions.length > 0) {
+          const lastSession = classSessions[0];
+          if (lastSession["Bài tập"]) {
+            setPreviousHomework({
+              description: lastSession["Bài tập"]["Mô tả"] || "",
+              totalExercises: lastSession["Bài tập"]["Tổng số bài"] || 0,
+              attachments: lastSession["Bài tập"]["Tài liệu đính kèm"] || [],
+              date: lastSession["Ngày"],
+            });
+          }
+        }
+      }
+    }, { onlyOnce: true });
+  }, [classData?.id, sessionDate]);
+
+  // Bug 8: Handle upload attachment
+  const handleUploadAttachment = async (file: File) => {
+    setUploadingAttachment(true);
+    try {
+      const folderPath = generateFolderPath(classData?.id || "unknown");
+      const result = await uploadToCloudinary(file, folderPath);
+      
+      if (result.success && result.url) {
+        const newAttachment = {
+          name: file.name,
+          url: result.url,
+          type: file.type,
+          uploadedAt: new Date().toISOString(),
+        };
+        setHomeworkAttachments(prev => [...prev, newAttachment]);
+        message.success(`Đã tải lên: ${file.name}`);
+      } else {
+        message.error(result.error || "Lỗi khi tải file");
+      }
+    } catch (error: any) {
+      message.error(`Lỗi upload: ${error.message}`);
+    } finally {
+      setUploadingAttachment(false);
+    }
+  };
+
+  // Bug 8: Remove attachment
+  const handleRemoveAttachment = (index: number) => {
+    setHomeworkAttachments(prev => prev.filter((_, i) => i !== index));
+    message.info("Đã xóa tài liệu");
+  };
+
+  // Bug 13: Handle update check time
+  const handleUpdateCheckTime = async (
+    studentId: string, 
+    field: "Giờ check-in" | "Giờ check-out", 
+    newTime: string
+  ) => {
+    const updatedRecords = attendanceRecords.map((record) => {
+      if (record["Student ID"] === studentId) {
+        return { ...record, [field]: newTime };
+      }
+      return record;
+    });
+    
+    setAttendanceRecords(updatedRecords);
+    setEditingCheckTime(null);
+    
+    // Lưu ngay vào Firebase nếu đã có session
+    if (sessionId) {
+      try {
+        const sessionRef = ref(database, `datasheet/Điểm_danh_sessions/${sessionId}/Điểm danh`);
+        await set(sessionRef, updatedRecords);
+        message.success(`Đã cập nhật ${field}`);
+      } catch (error) {
+        console.error("Error updating check time:", error);
+        message.error("Lỗi cập nhật thời gian");
+      }
+    }
+  };
 
   // Initialize attendance records khi students được load và chưa có existing session
   useEffect(() => {
@@ -814,12 +940,13 @@ const AttendanceSessionPage = () => {
           "Thời gian hoàn thành": completionTime,
           "Người hoàn thành": completionPerson,
           "Bài tập":
-            homeworkDescription || totalExercises
+            homeworkDescription || totalExercises || homeworkAttachments.length > 0
               ? {
                   "Mô tả": homeworkDescription,
                   "Tổng số bài": totalExercises,
                   "Người giao": completionPerson,
                   "Thời gian giao": completionTime,
+                  "Tài liệu đính kèm": homeworkAttachments.length > 0 ? homeworkAttachments : undefined,
                 }
               : undefined,
         };
@@ -848,12 +975,13 @@ const AttendanceSessionPage = () => {
           "Thời gian hoàn thành": completionTime,
           "Người hoàn thành": completionPerson,
           "Bài tập":
-            homeworkDescription || totalExercises
+            homeworkDescription || totalExercises || homeworkAttachments.length > 0
               ? {
                   "Mô tả": homeworkDescription,
                   "Tổng số bài": totalExercises,
                   "Người giao": completionPerson,
                   "Thời gian giao": completionTime,
+                  "Tài liệu đính kèm": homeworkAttachments.length > 0 ? homeworkAttachments : undefined,
                 }
               : undefined,
           Timestamp: completionTime,
@@ -925,15 +1053,40 @@ const AttendanceSessionPage = () => {
     {
       title: "Giờ check-in",
       key: "checkin",
-      width: 120,
+      width: 140,
       render: (_: any, record: Student) => {
         const attendanceRecord = attendanceRecords.find(
           (r) => r["Student ID"] === record.id
         );
         if (!attendanceRecord?.["Có mặt"]) return "-";
         
+        const isEditing = editingCheckTime?.studentId === record.id && editingCheckTime?.field === "Giờ check-in";
+        
+        if (isEditing) {
+          return (
+            <TimePicker
+              format="HH:mm:ss"
+              defaultValue={attendanceRecord["Giờ check-in"] ? dayjs(attendanceRecord["Giờ check-in"]) : undefined}
+              onChange={(time) => {
+                if (time) {
+                  handleUpdateCheckTime(record.id, "Giờ check-in", time.format("HH:mm:ss"));
+                }
+              }}
+              onBlur={() => setEditingCheckTime(null)}
+              autoFocus
+              size="small"
+              style={{ width: 120 }}
+            />
+          );
+        }
+        
         return attendanceRecord?.["Giờ check-in"] ? (
-          <Tag icon={<LoginOutlined />} color="success">
+          <Tag 
+            icon={<LoginOutlined />} 
+            color="success"
+            style={{ cursor: isReadOnly ? "default" : "pointer" }}
+            onClick={() => !isReadOnly && setEditingCheckTime({ studentId: record.id, field: "Giờ check-in" })}
+          >
             {attendanceRecord["Giờ check-in"]}
           </Tag>
         ) : (
@@ -944,16 +1097,41 @@ const AttendanceSessionPage = () => {
     {
       title: "Check-out",
       key: "checkout",
-      width: 140,
+      width: 160,
       render: (_: any, record: Student) => {
         const attendanceRecord = attendanceRecords.find(
           (r) => r["Student ID"] === record.id
         );
         if (!attendanceRecord?.["Có mặt"] || !attendanceRecord?.["Giờ check-in"]) return "-";
         
+        const isEditing = editingCheckTime?.studentId === record.id && editingCheckTime?.field === "Giờ check-out";
+        
+        if (isEditing) {
+          return (
+            <TimePicker
+              format="HH:mm:ss"
+              defaultValue={attendanceRecord["Giờ check-out"] ? dayjs(attendanceRecord["Giờ check-out"]) : undefined}
+              onChange={(time) => {
+                if (time) {
+                  handleUpdateCheckTime(record.id, "Giờ check-out", time.format("HH:mm:ss"));
+                }
+              }}
+              onBlur={() => setEditingCheckTime(null)}
+              autoFocus
+              size="small"
+              style={{ width: 120 }}
+            />
+          );
+        }
+        
         if (attendanceRecord?.["Giờ check-out"]) {
           return (
-            <Tag icon={<LogoutOutlined />} color="warning">
+            <Tag 
+              icon={<LogoutOutlined />} 
+              color="warning"
+              style={{ cursor: isReadOnly ? "default" : "pointer" }}
+              onClick={() => !isReadOnly && setEditingCheckTime({ studentId: record.id, field: "Giờ check-out" })}
+            >
               {attendanceRecord["Giờ check-out"]}
             </Tag>
           );
@@ -1121,9 +1299,18 @@ const AttendanceSessionPage = () => {
       },
     },
     {
-      title: "Bài tập hoàn thành",
+      title: (
+        <Space direction="vertical" size={0}>
+          <span>Bài tập hoàn thành</span>
+          {previousHomework && (
+            <span style={{ fontSize: 11, color: "#888", fontWeight: "normal" }}>
+              (Buổi {dayjs(previousHomework.date).format("DD/MM")})
+            </span>
+          )}
+        </Space>
+      ),
       key: "exercises",
-      width: 140,
+      width: 160,
       render: (_: any, record: Student) => {
         const attendanceRecord = attendanceRecords.find(
           (r) => r["Student ID"] === record.id
@@ -1131,7 +1318,8 @@ const AttendanceSessionPage = () => {
         if (!attendanceRecord?.["Có mặt"]) return "-";
 
         const completed = attendanceRecord?.["Bài tập hoàn thành"] ?? 0;
-        const total = totalExercises || 0;
+        // Bug 9: Sử dụng tổng số bài từ buổi trước thay vì buổi hiện tại
+        const total = previousHomework?.totalExercises || totalExercises || 0;
 
         return (
           <Space.Compact style={{ width: "100%" }}>
@@ -1402,6 +1590,39 @@ const AttendanceSessionPage = () => {
 
         {currentStep === 1 && (
           <div>
+            {/* Bug 9: Hiển thị bài tập buổi trước */}
+            {previousHomework && (
+              <Card 
+                title={
+                  <Space>
+                    <FileOutlined />
+                    <span>Bài tập buổi trước ({dayjs(previousHomework.date).format("DD/MM/YYYY")})</span>
+                  </Space>
+                }
+                size="small"
+                style={{ marginBottom: 16, background: "#fff7e6", borderColor: "#ffd591" }}
+              >
+                <p><strong>Mô tả:</strong> {previousHomework.description || "Không có mô tả"}</p>
+                <p><strong>Tổng số bài:</strong> {previousHomework.totalExercises} bài</p>
+                {previousHomework.attachments && previousHomework.attachments.length > 0 && (
+                  <div>
+                    <strong>Tài liệu:</strong>
+                    <List
+                      size="small"
+                      dataSource={previousHomework.attachments}
+                      renderItem={(item: any) => (
+                        <List.Item>
+                          <a href={item.url} target="_blank" rel="noopener noreferrer">
+                            <PaperClipOutlined /> {item.name}
+                          </a>
+                        </List.Item>
+                      )}
+                    />
+                  </div>
+                )}
+              </Card>
+            )}
+
             <Card title="Bài tập về nhà" style={{ marginBottom: 16 }}>
               <Form layout="vertical">
                 <Form.Item label="Mô tả bài tập">
@@ -1422,6 +1643,54 @@ const AttendanceSessionPage = () => {
                     style={{ width: 200 }}
                     disabled={isReadOnly}
                   />
+                </Form.Item>
+                
+                {/* Bug 8: Upload tài liệu đính kèm */}
+                <Form.Item label="Tài liệu đính kèm">
+                  <Space direction="vertical" style={{ width: "100%" }}>
+                    <Upload
+                      beforeUpload={(file) => {
+                        handleUploadAttachment(file);
+                        return false; // Prevent default upload
+                      }}
+                      showUploadList={false}
+                      disabled={isReadOnly || uploadingAttachment}
+                    >
+                      <Button 
+                        icon={<UploadOutlined />} 
+                        loading={uploadingAttachment}
+                        disabled={isReadOnly}
+                      >
+                        {uploadingAttachment ? "Đang tải lên..." : "Tải lên tài liệu"}
+                      </Button>
+                    </Upload>
+                    
+                    {homeworkAttachments.length > 0 && (
+                      <List
+                        size="small"
+                        bordered
+                        dataSource={homeworkAttachments}
+                        renderItem={(item, index) => (
+                          <List.Item
+                            actions={!isReadOnly ? [
+                              <Button 
+                                type="link" 
+                                danger 
+                                size="small"
+                                onClick={() => handleRemoveAttachment(index)}
+                              >
+                                Xóa
+                              </Button>
+                            ] : []}
+                          >
+                            <a href={item.url} target="_blank" rel="noopener noreferrer">
+                              <PaperClipOutlined /> {item.name}
+                            </a>
+                          </List.Item>
+                        )}
+                      />
+                    )}
+                  </Space>
                 </Form.Item>
               </Form>
             </Card>

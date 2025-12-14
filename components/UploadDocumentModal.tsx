@@ -25,7 +25,7 @@ import {
   FileImageOutlined,
   CloudUploadOutlined,
 } from "@ant-design/icons";
-import { uploadToBunny, generateFilePath } from "../utils/bunnyStorage";
+import { uploadToCloudinary, generateFolderPath } from "../utils/cloudinaryStorage";
 
 const { Text } = Typography;
 const { Dragger } = Upload;
@@ -119,12 +119,12 @@ const UploadDocumentModal = ({
 
         setUploadProgress(30);
 
-        // Generate file path
-        const filePath = generateFilePath(classId, file.name);
+        // Generate folder path for Cloudinary
+        const folderPath = generateFolderPath(classId, file.name);
 
-        // Upload to Bunny Storage
+        // Upload to Cloudinary
         setUploadProgress(50);
-        const uploadResult = await uploadToBunny(file, filePath);
+        const uploadResult = await uploadToCloudinary(file, folderPath);
 
         if (!uploadResult.success) {
           message.error(uploadResult.error || "Lỗi khi tải file lên");

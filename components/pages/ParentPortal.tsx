@@ -39,9 +39,13 @@ import {
   DownloadOutlined,
   GiftOutlined,
   StarOutlined,
+  PaperClipOutlined,
+  FolderOutlined,
 } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useNavigate } from "react-router-dom";
+// Bug 10: Import subjectMap để dịch tên môn học
+import { subjectMap } from "@/utils/selectOptions";
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -1002,7 +1006,7 @@ const ParentPortal: React.FC = () => {
         data[dayOfWeek].push({
           type: "class",
           className: cls["Tên lớp"],
-          subject: cls["Môn học"],
+          subject: subjectMap[cls["Môn học"]] || cls["Môn học"],
           startTime: schedule["Giờ bắt đầu"],
           endTime: schedule["Giờ kết thúc"],
           location: schedule["Địa điểm"],
@@ -1415,7 +1419,7 @@ const ParentPortal: React.FC = () => {
                             >
                               <Descriptions column={1} size="small" bordered>
                                 <Descriptions.Item label="Môn học">
-                                  {cls["Môn học"]}
+                                  {subjectMap[cls["Môn học"]] || cls["Môn học"]}
                                 </Descriptions.Item>
                                 <Descriptions.Item label="Giáo viên">
                                   {cls["Giáo viên chủ nhiệm"]}
@@ -1475,7 +1479,7 @@ const ParentPortal: React.FC = () => {
                             >
                               <Descriptions column={1} size="small">
                                 <Descriptions.Item label="Môn học">
-                                  {cls["Môn học"]}
+                                  {subjectMap[cls["Môn học"]] || cls["Môn học"]}
                                 </Descriptions.Item>
                                 <Descriptions.Item label="Khối">{cls["Khối"]}</Descriptions.Item>
                                 <Descriptions.Item label="Giáo viên">
@@ -1537,6 +1541,28 @@ const ParentPortal: React.FC = () => {
                                     <Paragraph>
                                       <strong>Mô tả:</strong> {homework["Mô tả"]}
                                     </Paragraph>
+                                    {/* Bug 11: Hiển thị tài liệu đính kèm */}
+                                    {homework["Tài liệu đính kèm"] && homework["Tài liệu đính kèm"].length > 0 && (
+                                      <div>
+                                        <Text strong><PaperClipOutlined /> Tài liệu đính kèm:</Text>
+                                        <List
+                                          size="small"
+                                          dataSource={homework["Tài liệu đính kèm"]}
+                                          renderItem={(attachment: any) => (
+                                            <List.Item style={{ padding: "4px 0" }}>
+                                              <a 
+                                                href={attachment.url} 
+                                                target="_blank" 
+                                                rel="noopener noreferrer"
+                                                style={{ display: "flex", alignItems: "center", gap: 8 }}
+                                              >
+                                                <PaperClipOutlined /> {attachment.name}
+                                              </a>
+                                            </List.Item>
+                                          )}
+                                        />
+                                      </div>
+                                    )}
                                     <div>
                                       <Text type="secondary">
                                         Giao bởi: {homework["Người giao"]} -{" "}
@@ -2078,69 +2104,103 @@ const ParentPortal: React.FC = () => {
                       <Empty description="Chưa có lớp học nào" />
                     ) : (
                       <Row gutter={[16, 16]}>
-                        {classes.map((cls) => (
-                          <Col xs={24} key={cls.id}>
-                            <Card
-                              title={
-                                <Space>
-                                  <BookOutlined />
-                                  {cls["Tên lớp"]} - {cls["Môn học"]}
-                                </Space>
-                              }
-                              extra={
-                                <Tag color={cls["Trạng thái"] === "active" ? "green" : "red"}>
-                                  {cls["Trạng thái"] === "active" ? "Đang học" : "Đã kết thúc"}
-                                </Tag>
-                              }
-                            >
-                              {cls["Tài liệu"] && cls["Tài liệu"].length > 0 ? (
-                                <List
-                                  dataSource={cls["Tài liệu"]}
-                                  renderItem={(doc: any) => (
-                                    <List.Item
-                                      actions={[
-                                        <Button
-                                          type="link"
-                                          icon={<DownloadOutlined />}
-                                          href={doc.url}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                        >
-                                          Tải xuống
-                                        </Button>,
-                                      ]}
-                                    >
-                                      <List.Item.Meta
-                                        avatar={<FileTextOutlined style={{ fontSize: 24, color: "#1890ff" }} />}
-                                        title={doc.name || doc.title}
-                                        description={
-                                          <Space direction="vertical" size="small">
-                                            {doc.description && <Text type="secondary">{doc.description}</Text>}
-                                            {doc.uploadedAt && (
-                                              <Text type="secondary" style={{ fontSize: 12 }}>
-                                                Đăng tải: {dayjs(doc.uploadedAt).format("DD/MM/YYYY HH:mm")}
-                                              </Text>
-                                            )}
-                                            {doc.uploadedBy && (
-                                              <Text type="secondary" style={{ fontSize: 12 }}>
-                                                Bởi: {doc.uploadedBy}
-                                              </Text>
-                                            )}
-                                          </Space>
-                                        }
-                                      />
-                                    </List.Item>
-                                  )}
-                                />
-                              ) : (
-                                <Empty
-                                  description="Chưa có tài liệu nào"
-                                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                                />
-                              )}
-                            </Card>
-                          </Col>
-                        ))}
+                        {classes.map((cls) => {
+                          // Bug 12: Lấy tài liệu từ các buổi học (BTVN attachments)
+                          const sessionDocuments = recentSessions
+                            .filter((s) => s["Class ID"] === cls.id && s["Bài tập"]?.["Tài liệu đính kèm"])
+                            .flatMap((s) => (s["Bài tập"]["Tài liệu đính kèm"] || []).map((doc: any) => ({
+                              ...doc,
+                              sessionDate: s["Ngày"],
+                              sessionName: s["Tên lớp"],
+                              source: "homework",
+                            })));
+                          
+                          // Kết hợp tài liệu lớp và tài liệu BTVN
+                          const allDocuments = [
+                            ...(cls["Tài liệu"] || []).map((doc: any) => ({ ...doc, source: "class" })),
+                            ...sessionDocuments,
+                          ];
+
+                          return (
+                            <Col xs={24} key={cls.id}>
+                              <Card
+                                title={
+                                  <Space>
+                                    <BookOutlined />
+                                    {cls["Tên lớp"]} - {subjectMap[cls["Môn học"]] || cls["Môn học"]}
+                                  </Space>
+                                }
+                                extra={
+                                  <Tag color={cls["Trạng thái"] === "active" ? "green" : "red"}>
+                                    {cls["Trạng thái"] === "active" ? "Đang học" : "Đã kết thúc"}
+                                  </Tag>
+                                }
+                              >
+                                {allDocuments.length > 0 ? (
+                                  <List
+                                    dataSource={allDocuments}
+                                    renderItem={(doc: any) => (
+                                      <List.Item
+                                        actions={[
+                                          <Button
+                                            type="link"
+                                            icon={<DownloadOutlined />}
+                                            href={doc.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                          >
+                                            Tải xuống
+                                          </Button>,
+                                        ]}
+                                      >
+                                        <List.Item.Meta
+                                          avatar={
+                                            doc.source === "homework" 
+                                              ? <PaperClipOutlined style={{ fontSize: 24, color: "#fa8c16" }} />
+                                              : <FileTextOutlined style={{ fontSize: 24, color: "#1890ff" }} />
+                                          }
+                                          title={
+                                            <Space>
+                                              {doc.name || doc.title}
+                                              {doc.source === "homework" && (
+                                                <Tag color="orange" style={{ fontSize: 10 }}>BTVN</Tag>
+                                              )}
+                                            </Space>
+                                          }
+                                          description={
+                                            <Space direction="vertical" size="small">
+                                              {doc.description && <Text type="secondary">{doc.description}</Text>}
+                                              {doc.sessionDate && (
+                                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                                  Buổi học: {dayjs(doc.sessionDate).format("DD/MM/YYYY")}
+                                                </Text>
+                                              )}
+                                              {doc.uploadedAt && (
+                                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                                  Đăng tải: {dayjs(doc.uploadedAt).format("DD/MM/YYYY HH:mm")}
+                                                </Text>
+                                              )}
+                                              {doc.uploadedBy && (
+                                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                                  Bởi: {doc.uploadedBy}
+                                                </Text>
+                                              )}
+                                            </Space>
+                                          }
+                                        />
+                                      </List.Item>
+                                    )}
+                                  />
+                                ) : (
+                                  <Empty
+                                    description="Chưa có tài liệu nào"
+                                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                                  />
+                                )}
+                              </Card>
+                            </Col>
+                          );
+                        })}
                       </Row>
                     )}
                   </div>

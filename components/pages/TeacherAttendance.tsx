@@ -40,6 +40,8 @@ const TeacherAttendance = () => {
   const [selectedMonth, setSelectedMonth] = useState<Dayjs>(dayjs());
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [timetableEntries, setTimetableEntries] = useState<TimetableEntry[]>([]);
+  // Bug 5: Thêm state cho ngày điểm danh (cho phép điểm danh bù hôm trước)
+  const [selectedAttendanceDate, setSelectedAttendanceDate] = useState<Dayjs>(dayjs());
 
   const isAdmin = userProfile?.isAdmin === true || userProfile?.role === "admin";
   const teacherId =
@@ -104,10 +106,11 @@ const TeacherAttendance = () => {
     return () => unsubscribe();
   }, []);
 
-  // Get today's day of week (2-8)
-  const today = dayjs();
+  // Bug 5: Sử dụng ngày được chọn thay vì ngày hôm nay (cho phép điểm danh bù)
+  const today = selectedAttendanceDate;
   const todayDayOfWeek = today.day() === 0 ? 8 : today.day() + 1; // Convert 0-6 to 2-8
   const todayDate = today.format("YYYY-MM-DD");
+  const isToday = selectedAttendanceDate.format("YYYY-MM-DD") === dayjs().format("YYYY-MM-DD");
 
   // Helper: Check if a class has custom schedule for today (from Thời_khoá_biểu)
   const hasCustomScheduleToday = (classId: string): boolean => {
@@ -197,10 +200,10 @@ const TeacherAttendance = () => {
       return aTime.localeCompare(bTime);
     });
 
-  // Get other classes - chỉ hiển thị lớp có lịch học hôm nay (nhưng không phải lớp của giáo viên này nếu không phải admin)
+  // Bug 6: Sửa logic otherClasses - Giáo viên xem lớp CỦA MÌNH không có lịch ngày được chọn (để điểm danh bù)
   const otherClasses = useMemo(() => {
     if (isAdmin) {
-      // Admin: hiển thị tất cả lớp có lịch hôm nay (trừ lớp đã hiển thị ở "Lớp học hôm nay")
+      // Admin: hiển thị tất cả lớp chưa có lịch hôm nay (có thể điểm danh bù cho bất kỳ lớp nào)
       return classes
         .filter((c) => {
           const isActive = c["Trạng thái"] === "active";
@@ -210,20 +213,16 @@ const TeacherAttendance = () => {
             (!startDate || today.isSameOrAfter(startDate, "day")) &&
             (!endDate || today.isSameOrBefore(endDate, "day"));
           
-          return hasScheduleToday(c) && isActive && isWithinDateRange;
+          // Lớp không có lịch ngày được chọn
+          return !hasScheduleToday(c) && isActive && isWithinDateRange;
         })
-        .filter((c) => !todayClasses.some((tc) => tc.id === c.id)) // Loại bỏ lớp đã hiển thị ở "Lớp học hôm nay"
-        .sort((a, b) => {
-          const aTime = getScheduleTimeToday(a);
-          const bTime = getScheduleTimeToday(b);
-          if (!aTime || !bTime) return 0;
-          return aTime.localeCompare(bTime);
-        });
+        .filter((c) => !todayClasses.some((tc) => tc.id === c.id))
+        .sort((a, b) => a["Tên lớp"].localeCompare(b["Tên lớp"]));
     } else {
-      // Giáo viên: hiển thị lớp có lịch hôm nay nhưng không phải lớp của giáo viên này
+      // Bug 6 FIX: Giáo viên xem lớp CỦA MÌNH (isMyClass) không có lịch ngày được chọn (để điểm danh bù)
       return classes
         .filter((c) => {
-          const isNotMyClass = c["Teacher ID"] !== teacherId;
+          const isMyClass = c["Teacher ID"] === teacherId; // Lớp CỦA giáo viên
           const isActive = c["Trạng thái"] === "active";
           const startDate = c["Ngày bắt đầu"] ? dayjs(c["Ngày bắt đầu"]) : null;
           const endDate = c["Ngày kết thúc"] ? dayjs(c["Ngày kết thúc"]) : null;
@@ -231,14 +230,10 @@ const TeacherAttendance = () => {
             (!startDate || today.isSameOrAfter(startDate, "day")) &&
             (!endDate || today.isSameOrBefore(endDate, "day"));
           
-          return hasScheduleToday(c) && isNotMyClass && isActive && isWithinDateRange;
+          // Lớp của tôi KHÔNG có lịch ngày được chọn (để điểm danh bù)
+          return isMyClass && !hasScheduleToday(c) && isActive && isWithinDateRange;
         })
-        .sort((a, b) => {
-          const aTime = getScheduleTimeToday(a);
-          const bTime = getScheduleTimeToday(b);
-          if (!aTime || !bTime) return 0;
-          return aTime.localeCompare(bTime);
-        });
+        .sort((a, b) => a["Tên lớp"].localeCompare(b["Tên lớp"]));
     }
   }, [classes, todayClasses, todayDayOfWeek, isAdmin, teacherId, today, timetableEntries]);
 
@@ -445,8 +440,37 @@ const TeacherAttendance = () => {
 
   return (
     <WrapperContent title="Điểm danh" isLoading={loading}>
+      {/* Bug 5: Thêm DatePicker cho phép chọn ngày điểm danh bù */}
+      <Card size="small" style={{ marginBottom: 16, background: isToday ? "#f6ffed" : "#fffbe6" }}>
+        <Space wrap>
+          <span style={{ fontWeight: 600 }}>
+            {isToday ? "📅 Hôm nay:" : "📅 Ngày điểm danh:"}
+          </span>
+          <DatePicker
+            value={selectedAttendanceDate}
+            onChange={(date) => date && setSelectedAttendanceDate(date)}
+            format="DD/MM/YYYY (dddd)"
+            allowClear={false}
+            disabledDate={(current) => current && current > dayjs().endOf('day')}
+            style={{ minWidth: 200 }}
+          />
+          {!isToday && (
+            <>
+              <Tag color="orange">Điểm danh bù</Tag>
+              <Button 
+                type="link" 
+                size="small"
+                onClick={() => setSelectedAttendanceDate(dayjs())}
+              >
+                Về hôm nay
+              </Button>
+            </>
+          )}
+        </Space>
+      </Card>
+
       <p style={{ color: "#666", marginBottom: 24 }}>
-        Hôm nay: {today.format("dddd, DD/MM/YYYY")}
+        {isToday ? `Hôm nay: ${today.format("dddd, DD/MM/YYYY")}` : `Ngày đã chọn: ${today.format("dddd, DD/MM/YYYY")}`}
       </p>
 
       {todayClasses.length > 0 && (
@@ -544,7 +568,11 @@ const TeacherAttendance = () => {
       )}
 
       {otherClasses.length > 0 && (
-        <Card title={`Lớp học khác (${otherClasses.length})`}>
+        <Card title={
+          isAdmin 
+            ? `Lớp khác không có lịch (${otherClasses.length})`
+            : `Lớp của tôi - Điểm danh bù (${otherClasses.length})`
+        }>
           <List
             dataSource={otherClasses}
             renderItem={(classData) => {

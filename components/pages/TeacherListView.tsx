@@ -106,6 +106,7 @@ const TeacherListView: React.FC = () => {
   const [scheduleEvents, setScheduleEvents] = useState<ScheduleEvent[]>([]);
   const [attendanceSessions, setAttendanceSessions] = useState<any[]>([]);
   const [students, setStudents] = useState<any[]>([]);
+  const [classes, setClasses] = useState<any[]>([]); // Bug 4: Thêm state lớp học
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [startDate, setStartDate] = useState("");
@@ -279,7 +280,75 @@ const TeacherListView: React.FC = () => {
     fetchStudents();
   }, []);
 
-  // Calculate total salary based on sessions taught
+  // Bug 4: Fetch lớp học để lấy Lương GV từ từng lớp
+  useEffect(() => {
+    const fetchClasses = async () => {
+      try {
+        const response = await fetch(`${DATABASE_URL_BASE}/datasheet/L%E1%BB%9Bp_h%E1%BB%8Dc.json`);
+        const data = await response.json();
+        if (data) {
+          const classesArray = Object.keys(data).map((key) => ({
+            id: key,
+            ...data[key],
+          }));
+          setClasses(classesArray);
+          console.log("✅ Classes loaded for salary calculation:", classesArray.length);
+        }
+      } catch (error) {
+        console.error("Error fetching classes:", error);
+      }
+    };
+    fetchClasses();
+  }, []);
+
+  // Bug 4: Tính tổng lương từ các lớp giáo viên dạy (lấy Lương GV từ từng lớp)
+  const calculateTotalSalaryFromClasses = (
+    teacherId: string,
+    fromDate?: Date,
+    toDate?: Date
+  ): { totalSalary: number; avgSalaryPerSession: number; totalSessions: number } => {
+    const normalizedTeacherId = String(teacherId || "").trim();
+    const teacher = teachers.find(t => t.id === teacherId);
+    const teacherName = teacher ? getTeacherName(teacher) : "";
+    
+    // Lấy các sessions của giáo viên
+    const teacherSessions = attendanceSessions.filter((session) => {
+      const sessionTeacher = session["Teacher ID"];
+      const normalizedSessionTeacher = String(sessionTeacher || "").trim();
+      const sessionTeacherName = session["Giáo viên"] || "";
+      
+      return normalizedSessionTeacher === normalizedTeacherId || 
+             (teacherName && sessionTeacherName && 
+              String(teacherName).trim() === String(sessionTeacherName).trim());
+    });
+
+    // Filter theo ngày nếu cần
+    let filteredSessions = teacherSessions;
+    if (fromDate && toDate) {
+      filteredSessions = teacherSessions.filter((session) => {
+        if (!session["Ngày"]) return false;
+        const sessionDate = new Date(session["Ngày"]);
+        return sessionDate >= fromDate && sessionDate <= toDate;
+      });
+    }
+
+    // Tính lương từ từng session dựa trên lớp
+    let totalSalary = 0;
+    filteredSessions.forEach((session) => {
+      const classId = session["Class ID"];
+      const classData = classes.find(c => c.id === classId);
+      // Lấy Lương GV từ lớp, nếu không có thì dùng Lương theo buổi của giáo viên
+      const salaryForThisSession = classData?.["Lương GV"] || teacher?.["Lương theo buổi"] || 0;
+      totalSalary += Number(salaryForThisSession) || 0;
+    });
+
+    const totalSessions = filteredSessions.length;
+    const avgSalaryPerSession = totalSessions > 0 ? Math.round(totalSalary / totalSessions) : 0;
+
+    return { totalSalary, avgSalaryPerSession, totalSessions };
+  };
+
+  // Calculate total salary based on sessions taught (legacy - dùng cho trường hợp không có classes)
   const calculateTotalSalary = (
     teacherId: string,
     salaryPerSession: number,
@@ -571,13 +640,18 @@ const TeacherListView: React.FC = () => {
       const fromDate = startDate ? new Date(startDate) : undefined;
       const toDate = endDate ? new Date(endDate) : undefined;
       const stats = calculateTeacherHours(teacher.id, fromDate, toDate);
-      const salaryPerSession = teacher["Lương theo buổi"] || 0;
-      const totalSalary = calculateTotalSalary(
-        teacher.id,
-        salaryPerSession,
-        fromDate,
-        toDate
-      );
+      
+      // Bug 4: Tính lương từ các lớp thay vì từ teacher
+      const salaryFromClasses = calculateTotalSalaryFromClasses(teacher.id, fromDate, toDate);
+      
+      // Ưu tiên lương từ lớp, nếu không có thì dùng từ teacher
+      const salaryPerSession = salaryFromClasses.avgSalaryPerSession > 0 
+        ? salaryFromClasses.avgSalaryPerSession 
+        : (teacher["Lương theo buổi"] || 0);
+      const totalSalary = salaryFromClasses.totalSalary > 0
+        ? salaryFromClasses.totalSalary
+        : calculateTotalSalary(teacher.id, teacher["Lương theo buổi"] || 0, fromDate, toDate);
+      
       return {
         ...teacher,
         ...stats,
@@ -588,6 +662,7 @@ const TeacherListView: React.FC = () => {
   }, [
     teachers,
     attendanceSessions,
+    classes, // Bug 4: Thêm dependency classes
     startDate,
     endDate,
     selectedBienChe,

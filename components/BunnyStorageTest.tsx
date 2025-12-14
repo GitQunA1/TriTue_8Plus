@@ -1,15 +1,15 @@
 import { Button, message, Space, Card, Typography } from "antd";
 import { CheckCircleOutlined, CloseCircleOutlined } from "@ant-design/icons";
-import { testBunnyConnection } from "../utils/bunnyStorage";
+import { testCloudinaryConnection } from "../utils/cloudinaryStorage";
 import { useState } from "react";
 
 const { Text } = Typography;
 
 /**
- * Component để test kết nối Bunny Storage
+ * Component để test kết nối Cloudinary Storage
  * Chỉ dùng trong development
  */
-const BunnyStorageTest = () => {
+const CloudinaryStorageTest = () => {
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<{
     success: boolean;
@@ -21,11 +21,11 @@ const BunnyStorageTest = () => {
     setResult(null);
     
     try {
-      const testResult = await testBunnyConnection();
+      const testResult = await testCloudinaryConnection();
       setResult(testResult);
       
       if (testResult.success) {
-        message.success(testResult.message);
+        message.success("Kết nối Cloudinary thành công!");
       } else {
         message.error(testResult.message);
       }
@@ -56,7 +56,7 @@ const BunnyStorageTest = () => {
       }}
     >
       <Space direction="vertical" style={{ width: "100%" }}>
-        <Text strong>🔧 Bunny Storage Debug</Text>
+        <Text strong>🔧 Cloudinary Storage Debug</Text>
         <Space>
           <Button 
             size="small" 
@@ -72,7 +72,10 @@ const BunnyStorageTest = () => {
               ) : (
                 <CloseCircleOutlined style={{ color: "#ff4d4f" }} />
               )}
-              <Text type={result.success ? "success" : "danger"}>
+              <Text 
+                type={result.success ? "success" : "danger"}
+                style={{ whiteSpace: "pre-line", fontSize: "12px" }}
+              >
                 {result.message}
               </Text>
             </Space>
@@ -83,4 +86,4 @@ const BunnyStorageTest = () => {
   );
 };
 
-export default BunnyStorageTest;
+export default CloudinaryStorageTest;

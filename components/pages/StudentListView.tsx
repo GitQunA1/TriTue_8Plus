@@ -47,7 +47,7 @@ import { Empty } from "antd/lib";
 import StudentReportButton from "@/components/StudentReportButton";
 import ReactApexChart from "react-apexcharts";
 import type { ApexOptions } from "apexcharts";
-import { subjectMap, subjectOptions } from "@/utils/selectOptions";
+import { subjectMap, subjectOptions, studentGradeOptions } from "@/utils/selectOptions";
 
 const { TabPane } = Tabs;
 const { Text } = Typography;
@@ -252,20 +252,29 @@ const StudentListView: React.FC = () => {
   // Update edit student form when editingStudent changes
   useEffect(() => {
     if (editingStudent && isEditModalOpen) {
+      // Determine registered class IDs from `classes` table where this student is enrolled
+      const enrolledClassIds = classes
+        .filter((c) => (c["Student IDs"] || []).includes(editingStudent.id))
+        .map((c) => c.id);
+
       editStudentForm.setFieldsValue({
         name: editingStudent["Họ và tên"] || "",
+        studentCode: editingStudent["Mã học sinh"] || "",
         dob: editingStudent["Ngày sinh"] || "",
         phone: editingStudent["Số điện thoại"] || "",
         parentPhone: editingStudent["SĐT phụ huynh"] || "",
         status: editingStudent["Trạng thái"] || "",
         address: editingStudent["Địa chỉ"] || "",
         password: editingStudent["Mật khẩu"] || "",
+        grade: editingStudent["Khối"] || "",
+        // registeredSubjects now holds class IDs
+        registeredSubjects: enrolledClassIds,
       });
     } else if (!editingStudent && isEditModalOpen) {
       // Reset form when adding new student
       editStudentForm.resetFields();
     }
-  }, [editingStudent, isEditModalOpen, editStudentForm]);
+  }, [editingStudent, isEditModalOpen, editStudentForm, classes]);
 
   // Update extend hours form when extendingStudent changes
   useEffect(() => {
@@ -612,7 +621,7 @@ const StudentListView: React.FC = () => {
     });
   };
 
-  const handleSaveStudent = async (studentData: Partial<Student>) => {
+  const handleSaveStudent = async (studentData: Partial<Student>, selectedClassIds: string[] = []) => {
     try {
       const isNew = !studentData.id;
 
@@ -646,14 +655,43 @@ const StudentListView: React.FC = () => {
           response.statusText
         );
 
-        if (response.ok) {
+          if (response.ok) {
           const data = await response.json();
           console.log("✅ Student added to Firebase:", data);
           const newStudent = { id: data.name, ...dataWithoutId } as Student;
           setStudents([...students, newStudent]);
           setEditModalOpen(false);
           setEditingStudent(null);
-          message.success("Thêm học sinh thành công!");
+            message.success("Thêm học sinh thành công!");
+
+            // If selected classes provided, add this student to those classes
+            if (selectedClassIds && selectedClassIds.length > 0) {
+              try {
+                for (const classId of selectedClassIds) {
+                  const cls = classes.find((c) => c.id === classId);
+                  if (!cls) continue;
+                  const currentIds = Array.isArray(cls["Student IDs"]) ? cls["Student IDs"] : [];
+                  if (!currentIds.includes(newStudent.id)) {
+                    const updatedIds = [...currentIds, newStudent.id];
+                    const url = `${DATABASE_URL_BASE}/datasheet/Lớp_học/${classId}.json`;
+                    await fetch(url, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ "Student IDs": updatedIds }),
+                    });
+                  }
+                }
+                // Refresh classes locally
+                const resp = await fetch(`${DATABASE_URL_BASE}/datasheet/Lớp_học.json`);
+                const clsData = await resp.json();
+                if (clsData) {
+                  const classesArray = Object.entries(clsData).map(([id, cls]: [string, any]) => ({ id, ...cls }));
+                  setClasses(classesArray);
+                }
+              } catch (err) {
+                console.error("Error updating class membership for new student:", err);
+              }
+            }
         } else {
           const errorText = await response.text();
           console.error(
@@ -801,6 +839,52 @@ const StudentListView: React.FC = () => {
           message.error(
             `Không cập nhật được học sinh. Status: ${response.status}`
           );
+        }
+        // After updating student, update class membership according to selectedClassIds
+        try {
+          const studentId = studentData.id as string;
+          // previous classes where student was enrolled
+          const previousClassIds = classes.filter((c) => (c["Student IDs"] || []).includes(studentId)).map((c) => c.id);
+          const toAdd = selectedClassIds.filter((id) => !previousClassIds.includes(id));
+          const toRemove = previousClassIds.filter((id) => !selectedClassIds.includes(id));
+
+          for (const classId of toAdd) {
+            const cls = classes.find((c) => c.id === classId);
+            if (!cls) continue;
+            const currentIds = Array.isArray(cls["Student IDs"]) ? cls["Student IDs"] : [];
+            if (!currentIds.includes(studentId)) {
+              const updatedIds = [...currentIds, studentId];
+              const url2 = `${DATABASE_URL_BASE}/datasheet/Lớp_học/${classId}.json`;
+              await fetch(url2, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ "Student IDs": updatedIds }),
+              });
+            }
+          }
+          for (const classId of toRemove) {
+            const cls = classes.find((c) => c.id === classId);
+            if (!cls) continue;
+            const currentIds = Array.isArray(cls["Student IDs"]) ? cls["Student IDs"] : [];
+            if (currentIds.includes(studentId)) {
+              const updatedIds = currentIds.filter((sid: string) => sid !== studentId);
+              const url3 = `${DATABASE_URL_BASE}/datasheet/Lớp_học/${classId}.json`;
+              await fetch(url3, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ "Student IDs": updatedIds }),
+              });
+            }
+          }
+          // Refresh classes
+          const resp2 = await fetch(`${DATABASE_URL_BASE}/datasheet/Lớp_học.json`);
+          const clsData2 = await resp2.json();
+          if (clsData2) {
+            const classesArray2 = Object.entries(clsData2).map(([id, cls]: [string, any]) => ({ id, ...cls }));
+            setClasses(classesArray2);
+          }
+        } catch (err) {
+          console.error("Error syncing class membership after student update:", err);
         }
       }
     } catch (error) {
@@ -2770,10 +2854,10 @@ const StudentListView: React.FC = () => {
       >
         <Form
           form={editStudentForm}
-          onFinish={(values) => {
-            // Auto-generate Student Code if adding new student
-            let studentCode = editingStudent?.["Mã học sinh"] || "";
-            if (!editingStudent?.id) {
+          onFinish={async (values) => {
+            // Auto-generate Student Code if adding new student (only if not provided)
+            let studentCode = values.studentCode || editingStudent?.["Mã học sinh"] || "";
+            if (!editingStudent?.id && !studentCode) {
               // Generate new code: HS001, HS002, etc.
               const existingCodes = students
                 .map((s) => s["Mã học sinh"])
@@ -2794,18 +2878,20 @@ const StudentListView: React.FC = () => {
               "Địa chỉ": values.address,
               "Mật khẩu": values.password || "",
               "Số giờ đã gia hạn": editingStudent?.["Số giờ đã gia hạn"] || 0,
+              "Khối": values.grade || "",
+              "Môn học đăng ký": values.registeredSubjects || [],
             };
             // Preserve the ID if editing an existing student
             if (editingStudent?.id) {
               studentData.id = editingStudent.id;
             }
-            handleSaveStudent(studentData);
+            await handleSaveStudent(studentData, values.registeredSubjects || []);
           }}
           layout="vertical"
           style={{ padding: "24px" }}
         >
           <Row gutter={16}>
-            <Col span={24}>
+            <Col span={16}>
               <Form.Item
                 label="Họ và tên"
                 name="name"
@@ -2814,9 +2900,27 @@ const StudentListView: React.FC = () => {
                 <Input placeholder="Nhập họ và tên" />
               </Form.Item>
             </Col>
+            <Col span={8}>
+              <Form.Item 
+                label="Mã học sinh" 
+                name="studentCode"
+                extra={!editingStudent?.id ? "Để trống sẽ tự tạo" : undefined}
+              >
+                <Input placeholder="VD: HS001" />
+              </Form.Item>
+            </Col>
             <Col span={12}>
               <Form.Item label="Ngày sinh" name="dob">
                 <Input type="date" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label="Khối" name="grade">
+                <Select
+                  placeholder="Chọn khối"
+                  options={studentGradeOptions}
+                  allowClear
+                />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -2844,8 +2948,27 @@ const StudentListView: React.FC = () => {
               </Form.Item>
             </Col>
             <Col span={24}>
+              <Form.Item 
+                label="Lớp đăng ký" 
+                name="registeredSubjects"
+                extra="Chọn các lớp từ danh sách lớp học; chọn thêm sẽ thêm học sinh vào lớp"
+              >
+                <Select
+                  mode="multiple"
+                  placeholder="Chọn lớp"
+                  options={classes.map((c) => ({
+                    label: `${c["Tên lớp"]} — ${subjectMap[c["Môn học"]] || c["Môn học"]}`,
+                    value: c.id,
+                  }))}
+                  style={{ width: "100%" }}
+                  optionFilterProp="label"
+                  allowClear
+                />
+              </Form.Item>
+            </Col>
+            <Col span={24}>
               <Form.Item label="Địa chỉ" name="address">
-                <Input.TextArea rows={3} placeholder="Nhập địa chỉ" />
+                <Input.TextArea rows={2} placeholder="Nhập địa chỉ" />
               </Form.Item>
             </Col>
           </Row>

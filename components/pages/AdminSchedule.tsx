@@ -105,6 +105,33 @@ const AdminSchedule = () => {
     newValues?: any; // Chỉ dùng cho edit
   } | null>(null);
 
+  // Màu sắc cho từng giáo viên (Bug 2)
+  const TEACHER_COLOR_PALETTE = [
+    { bg: "#e6f7ff", border: "#1890ff", text: "#1890ff" }, // blue
+    { bg: "#fff7e6", border: "#fa8c16", text: "#fa8c16" }, // orange
+    { bg: "#f6ffed", border: "#52c41a", text: "#52c41a" }, // green
+    { bg: "#fff0f6", border: "#eb2f96", text: "#eb2f96" }, // pink
+    { bg: "#f9f0ff", border: "#722ed1", text: "#722ed1" }, // purple
+    { bg: "#e6fffb", border: "#13c2c2", text: "#13c2c2" }, // cyan
+    { bg: "#fffbe6", border: "#faad14", text: "#faad14" }, // yellow
+    { bg: "#f0f5ff", border: "#2f54eb", text: "#2f54eb" }, // geekblue
+    { bg: "#fcffe6", border: "#a0d911", text: "#a0d911" }, // lime
+    { bg: "#fff1f0", border: "#ff4d4f", text: "#ff4d4f" }, // red
+  ];
+
+  // Map lưu màu đã assign cho giáo viên
+  const teacherColorMap = new Map<string, { bg: string; border: string; text: string }>();
+  let colorAssignIndex = 0;
+
+  const getTeacherColor = (teacherId: string, teacherName: string) => {
+    const key = teacherId || teacherName || 'unknown';
+    if (!teacherColorMap.has(key)) {
+      teacherColorMap.set(key, TEACHER_COLOR_PALETTE[colorAssignIndex % TEACHER_COLOR_PALETTE.length]);
+      colorAssignIndex++;
+    }
+    return teacherColorMap.get(key)!;
+  };
+
   // Load rooms
   useEffect(() => {
     const roomsRef = ref(database, "datasheet/Phòng_học");
@@ -1135,19 +1162,11 @@ const AdminSchedule = () => {
                         const width = `calc((100% - 4px) / ${totalColumns})`;
                         const left = `calc(${column} * (100% - 4px) / ${totalColumns} + 2px)`;
 
-                        // Generate color based on class name for variety
-                        const colors = [
-                          { bg: "#fff1f0", border: "#ff4d4f" }, // red
-                          { bg: "#fff7e6", border: "#fa8c16" }, // orange  
-                          { bg: "#fffbe6", border: "#fadb14" }, // yellow
-                          { bg: "#f6ffed", border: "#52c41a" }, // green
-                          { bg: "#e6fffb", border: "#13c2c2" }, // cyan
-                          { bg: "#e6f7ff", border: "#1890ff" }, // blue
-                          { bg: "#f9f0ff", border: "#722ed1" }, // purple
-                          { bg: "#fff0f6", border: "#eb2f96" }, // pink
-                        ];
-                        const colorIndex = event.class["Tên lớp"]?.charCodeAt(0) % colors.length || 0;
-                        const colorScheme = colors[colorIndex];
+                        // Màu sắc theo GIÁO VIÊN (Bug 2 - mỗi giáo viên 1 màu)
+                        const colorScheme = getTeacherColor(
+                          event.class["Teacher ID"] || "",
+                          event.class["Giáo viên chủ nhiệm"] || ""
+                        );
 
                         return (
                           <div
@@ -1381,6 +1400,17 @@ const AdminSchedule = () => {
               <TimePicker format="HH:mm" style={{ width: "100%" }} size="large" />
             </Form.Item>
           </div>
+          <Form.Item label="Phòng học" name="Phòng học">
+            <Select
+              placeholder="Chọn phòng học"
+              allowClear
+              style={{ width: "100%" }}
+              options={Array.from(rooms.values()).map((room: any) => ({
+                value: room.id || room["Tên phòng"],
+                label: `${room["Tên phòng"]} - ${room["Địa điểm"] || ""}`
+              }))}
+            />
+          </Form.Item>
           <Form.Item label="Ghi chú" name="Ghi chú">
             <Input.TextArea rows={2} placeholder="Nhập ghi chú (tùy chọn)" />
           </Form.Item>
