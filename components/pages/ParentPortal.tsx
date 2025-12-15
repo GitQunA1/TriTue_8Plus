@@ -60,6 +60,22 @@ const ParentPortal: React.FC = () => {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [scheduleEvents, setScheduleEvents] = useState<any[]>([]);
   const [selectedMonth, setSelectedMonth] = useState<dayjs.Dayjs | null>(dayjs());
+  const [currentWeekStart, setCurrentWeekStart] = useState<Dayjs>(
+    dayjs().startOf("isoWeek")
+  );
+  const [selectedScheduleEvent, setSelectedScheduleEvent] = useState<any>(null);
+  const [scheduleDetailModalOpen, setScheduleDetailModalOpen] = useState(false);
+
+  // Hour slots for timeline view (6:00 - 22:00)
+  const HOUR_SLOTS = Array.from({ length: 17 }, (_, i) => {
+    const hour = i + 6;
+    return {
+      hour,
+      label: `${hour.toString().padStart(2, '0')}:00`,
+      start: `${hour.toString().padStart(2, '0')}:00`,
+      end: `${(hour + 1).toString().padStart(2, '0')}:00`,
+    };
+  });
 
   // Check authentication
   useEffect(() => {
@@ -284,713 +300,52 @@ const ParentPortal: React.FC = () => {
       .slice(0, 10);
   }, [attendanceSessions]);
 
-  // Print full report function
-  const handlePrintFullReport = () => {
-    if (!student || !userProfile) return;
+  // Get week days from currentWeekStart
+  const weekDays = useMemo(() => {
+    return Array.from({ length: 7 }, (_, i) =>
+      currentWeekStart.add(i, "day")
+    );
+  }, [currentWeekStart]);
 
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) return;
+  // Get schedule events for a specific date
+  const getScheduleForDate = (date: Dayjs) => {
+    const dateStr = date.format("YYYY-MM-DD");
+    const dayOfWeek = date.day() === 0 ? 8 : date.day() + 1;
 
-    // Get status text and color
-    const getStatusText = (record: any) => {
-      if (record["Có mặt"]) {
-        return record["Đi muộn"] ? "Đi muộn" : "Có mặt";
-      } else {
-        return record["Vắng có phép"] ? "Vắng có phép" : "Vắng không phép";
-      }
-    };
+    const events: any[] = [];
 
-    const getStatusColor = (record: any) => {
-      if (record["Có mặt"]) {
-        return record["Đi muộn"] ? "#fa8c16" : "#52c41a";
-      } else {
-        return record["Vắng có phép"] ? "#1890ff" : "#f5222d";
-      }
-    };
-
-    const content = `
-      <div class="report-header">
-        <h1>BÁO CÁO HỌC TẬP</h1>
-        <p>Ngày xuất: ${dayjs().format("DD/MM/YYYY HH:mm")}</p>
-      </div>
-
-      <div class="section">
-        <div class="section-title">Thông tin học sinh</div>
-        <table>
-          <tr><th>Họ và tên</th><td>${userProfile.studentName || student["Họ và tên"] || ""}</td></tr>
-          <tr><th>Mã học sinh</th><td>${userProfile.studentCode || student["Mã học sinh"] || "-"}</td></tr>
-          <tr><th>Ngày sinh</th><td>${student["Ngày sinh"] ? dayjs(student["Ngày sinh"]).format("DD/MM/YYYY") : "-"}</td></tr>
-          <tr><th>Số điện thoại</th><td>${student["Số điện thoại"] || "-"}</td></tr>
-          <tr><th>Email</th><td>${student["Email"] || "-"}</td></tr>
-          <tr><th>Địa chỉ</th><td>${student["Địa chỉ"] || "-"}</td></tr>
-        </table>
-      </div>
-
-      <div class="section">
-        <div class="section-title">Thống kê tổng quan</div>
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-value">${stats.totalSessions}</div>
-            <div class="stat-label">Tổng số buổi</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value">${stats.attendedSessions}</div>
-            <div class="stat-label">Số buổi có mặt</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value">${stats.absentSessions}</div>
-            <div class="stat-label">Số buổi vắng</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value">${stats.attendanceRate.toFixed(1)}%</div>
-            <div class="stat-label">Tỷ lệ tham gia</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value">${stats.averageScore.toFixed(1)} / 10</div>
-            <div class="stat-label">Điểm trung bình</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="section">
-        <div class="section-title">Lịch sử học tập chi tiết</div>
-        <table>
-          <thead>
-            <tr>
-              <th style="width: 80px;">Ngày</th>
-              <th>Lớp học</th>
-              <th style="width: 100px;">Giờ học</th>
-              <th style="width: 100px;">Trạng thái</th>
-              <th style="width: 60px;">Điểm</th>
-              <th style="width: 80px;">Bài tập</th>
-              <th>Ghi chú</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${attendanceSessions
-              .sort((a, b) => new Date(b["Ngày"]).getTime() - new Date(a["Ngày"]).getTime())
-              .map((session) => {
-                const studentRecord = session["Điểm danh"]?.find(
-                  (r: any) => r["Student ID"] === userProfile.studentId
-                );
-                const completed = studentRecord?.["Bài tập hoàn thành"];
-                const total = session["Bài tập"]?.["Tổng số bài"];
-                const homework =
-                  completed !== undefined && total
-                    ? `${completed}/${total}`
-                    : "-";
-                const statusText = studentRecord
-                  ? getStatusText(studentRecord)
-                  : "-";
-                const statusColor = studentRecord
-                  ? getStatusColor(studentRecord)
-                  : "#999";
-
-                return `
-              <tr>
-                <td style="text-align: center;">${dayjs(session["Ngày"]).format("DD/MM/YYYY")}</td>
-                <td>${session["Tên lớp"]}</td>
-                <td style="text-align: center;">${session["Giờ bắt đầu"]} - ${session["Giờ kết thúc"]}</td>
-                <td style="text-align: center; color: ${statusColor}; font-weight: bold;">${statusText}</td>
-                <td style="text-align: center; font-weight: bold;">${studentRecord?.["Điểm"] ?? "-"}</td>
-                <td style="text-align: center;">${homework}</td>
-                <td>${studentRecord?.["Ghi chú"] || "-"}</td>
-              </tr>
-            `;
-              })
-              .join("")}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="footer">
-        <p>Báo cáo được tạo tự động từ hệ thống quản lý học sinh.</p>
-        <p>Mọi thắc mắc xin liên hệ giáo viên phụ trách.</p>
-      </div>
-    `;
-
-    const styles = `
-      <style>
-        @page {
-          size: A4;
-          margin: 20mm;
-        }
-        body {
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-          color: #333;
-          line-height: 1.6;
-          background: #fff;
-        }
-        h1, h2, h3 {
-          margin: 0;
-          color: #004aad;
-        }
-        .report-header {
-          text-align: center;
-          border-bottom: 3px solid #004aad;
-          padding-bottom: 10px;
-          margin-bottom: 20px;
-        }
-        .report-header h1 {
-          font-size: 24px;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-        }
-        .report-header p {
-          font-size: 13px;
-          color: #666;
-        }
-        .section {
-          margin-bottom: 25px;
-        }
-        .section-title {
-          font-weight: bold;
-          color: #004aad;
-          border-left: 4px solid #004aad;
-          padding-left: 10px;
-          margin-bottom: 10px;
-          font-size: 16px;
-          text-transform: uppercase;
-        }
-        table {
-          width: 100%;
-          border-collapse: collapse;
-          margin-top: 8px;
-          font-size: 13px;
-        }
-        th, td {
-          border: 1px solid #ccc;
-          padding: 6px 8px;
-          text-align: left;
-          vertical-align: middle;
-        }
-        th {
-          background-color: #004aad;
-          color: #fff;
-          text-align: center;
-        }
-        tr:nth-child(even) {
-          background-color: #f8f9fa;
-        }
-        .stats-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-          gap: 8px;
-          margin-top: 10px;
-        }
-        .stat-card {
-          border: 1px solid #ddd;
-          border-radius: 6px;
-          padding: 6px 8px;
-          background: #fafafa;
-          text-align: center;
-        }
-        .stat-value {
-          font-size: 16px;
-          font-weight: 600;
-          color: #004aad;
-        }
-        .stat-label {
-          font-size: 12px;
-          color: #666;
-        }
-        .footer {
-          margin-top: 40px;
-          text-align: center;
-          font-size: 12px;
-          color: #888;
-          border-top: 1px solid #ccc;
-          padding-top: 10px;
-        }
-        @media print {
-          body { margin: 0; }
-        }
-      </style>
-    `;
-
-    printWindow.document.write(`
-      <html>
-        <head>
-          <meta charset="UTF-8" />
-          <title>Báo cáo học tập - ${userProfile.studentName}</title>
-          ${styles}
-        </head>
-        <body>
-          ${content}
-        </body>
-      </html>
-    `);
-
-    printWindow.document.close();
-    printWindow.focus();
-    setTimeout(() => {
-      printWindow.print();
-    }, 400);
-  };
-
-  // Print monthly report function - matching AdminMonthlyReportReview format
-  const handlePrintMonthlyReport = () => {
-    if (!student || !userProfile || !selectedMonth) return;
-
-    const printWindow = window.open("", "_blank");
-    if (!printWindow) return;
-
-    // Filter sessions by selected month
-    const filteredSessions = attendanceSessions.filter((session) => {
-      const sessionDate = dayjs(session["Ngày"]);
-      return (
-        sessionDate.month() === selectedMonth.month() &&
-        sessionDate.year() === selectedMonth.year()
-      );
-    }).sort((a, b) => new Date(a["Ngày"]).getTime() - new Date(b["Ngày"]).getTime());
-
-    // Calculate stats for selected month
-    let presentCount = 0;
-    let absentCount = 0;
-    let totalScore = 0;
-    let scoreCount = 0;
-
-    filteredSessions.forEach((session) => {
-      const record = session["Điểm danh"]?.find(
-        (r: any) => r["Student ID"] === userProfile.studentId
-      );
-      if (record) {
-        if (record["Có mặt"]) {
-          presentCount++;
-        } else {
-          absentCount++;
-        }
-        // Check both Điểm and Điểm kiểm tra
-        const score = record["Điểm kiểm tra"] ?? record["Điểm"];
-        if (score !== null && score !== undefined) {
-          totalScore += score;
-          scoreCount++;
-        }
-      }
-    });
-
-    const avgScore = scoreCount > 0 ? (totalScore / scoreCount).toFixed(1) : "0";
-    const attendanceRate =
-      filteredSessions.length > 0
-        ? ((presentCount / filteredSessions.length) * 100).toFixed(1)
-        : "0";
-
-    // Get status text and color
-    const getStatusText = (record: any) => {
-      if (record["Có mặt"]) {
-        return record["Đi muộn"] ? "Đi muộn" : "Có mặt";
-      } else {
-        return record["Vắng có phép"] ? "Vắng có phép" : "Vắng không phép";
-      }
-    };
-
-    const getStatusColor = (record: any) => {
-      if (record["Có mặt"]) {
-        return record["Đi muộn"] ? "#fa8c16" : "#52c41a";
-      } else {
-        return record["Vắng có phép"] ? "#1890ff" : "#f5222d";
-      }
-    };
-
-    // Group sessions by subject for score table (matching AdminMonthlyReportReview format)
-    const sessionsBySubject: { [subject: string]: any[] } = {};
-    filteredSessions.forEach((session) => {
-      const subject = session["Tên lớp"]?.split(" - ")[0] || "Chưa phân loại";
-      if (!sessionsBySubject[subject]) {
-        sessionsBySubject[subject] = [];
-      }
-      sessionsBySubject[subject].push(session);
-    });
-
-    // Generate score tables by subject
-    let scoreTablesHTML = "";
-    Object.entries(sessionsBySubject).forEach(([subject, subjectSessions]) => {
-      // Calculate subject stats
-      let subjectScores: number[] = [];
-      subjectSessions.forEach((session) => {
-        const record = session["Điểm danh"]?.find((r: any) => r["Student ID"] === userProfile.studentId);
-        const score = record?.["Điểm kiểm tra"] ?? record?.["Điểm"];
-        if (score !== null && score !== undefined) {
-          subjectScores.push(score);
+    // Lấy lịch từ class (lịch cố định theo thứ)
+    classes.forEach((cls) => {
+      const schedules = cls["Lịch học"] || [];
+      schedules.forEach((schedule: any) => {
+        if (schedule["Thứ"] === dayOfWeek) {
+          events.push({
+            type: "class",
+            class: cls,
+            schedule: schedule,
+            date: dateStr,
+            startTime: schedule["Giờ bắt đầu"],
+            endTime: schedule["Giờ kết thúc"],
+            subject: cls["Môn học"],
+            className: cls["Tên lớp"],
+            teacher: cls["Giáo viên chủ nhiệm"],
+            location: schedule["Địa điểm"],
+          });
         }
       });
-      const subjectAvg = subjectScores.length > 0
-        ? (subjectScores.reduce((a, b) => a + b, 0) / subjectScores.length).toFixed(1)
-        : "-";
-
-      let tableRows = "";
-      subjectSessions.forEach((session) => {
-        const studentRecord = session["Điểm danh"]?.find(
-          (r: any) => r["Student ID"] === userProfile.studentId
-        );
-
-        if (studentRecord) {
-          const date = dayjs(session["Ngày"]).format("DD/MM");
-          const attendance = studentRecord["Có mặt"]
-            ? (studentRecord["Đi muộn"] ? "Muộn" : "✓")
-            : (studentRecord["Vắng có phép"] ? "P" : "✗");
-          const attendanceColor = studentRecord["Có mặt"]
-            ? (studentRecord["Đi muộn"] ? "#fa8c16" : "#52c41a")
-            : (studentRecord["Vắng có phép"] ? "#1890ff" : "#f5222d");
-          const homeworkPercent = studentRecord["% Hoàn thành BTVN"] ?? "-";
-          const testName = studentRecord["Bài kiểm tra"] || "-";
-          const score = studentRecord["Điểm kiểm tra"] ?? studentRecord["Điểm"] ?? "-";
-          const bonusScore = studentRecord["Điểm thưởng"] ?? "-";
-          const completed = studentRecord["Bài tập hoàn thành"];
-          const total = session["Bài tập"]?.["Tổng số bài"];
-          const homework = (completed !== undefined && total) ? `${completed}/${total}` : "-";
-          const note = studentRecord["Ghi chú"] || "-";
-
-          tableRows += `
-            <tr>
-              <td style="text-align: center;">${date}</td>
-              <td style="text-align: center; color: ${attendanceColor}; font-weight: bold;">${attendance}</td>
-              <td style="text-align: center;">${homeworkPercent}</td>
-              <td style="text-align: left; font-size: 11px;">${testName}</td>
-              <td style="text-align: center; font-weight: bold;">${score}</td>
-              <td style="text-align: center;">${bonusScore}</td>
-              <td style="text-align: center;">${homework}</td>
-              <td style="text-align: left; font-size: 10px;">${note}</td>
-            </tr>
-          `;
-        }
-      });
-
-      scoreTablesHTML += `
-        <div class="subject-section">
-          <div class="subject-header">
-            <span class="subject-name">📚 ${subject}</span>
-            <span class="subject-avg">TB: <strong>${subjectAvg}</strong></span>
-          </div>
-          <table class="score-table">
-            <thead>
-              <tr>
-                <th style="width: 50px;">Ngày</th>
-                <th style="width: 60px;">Chuyên cần</th>
-                <th style="width: 55px;">% BTVN</th>
-                <th style="width: 110px;">Tên bài KT</th>
-                <th style="width: 45px;">Điểm</th>
-                <th style="width: 60px;">Điểm thưởng</th>
-                <th style="width: 55px;">Bài tập</th>
-                <th>Ghi chú</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${tableRows}
-            </tbody>
-          </table>
-        </div>
-      `;
     });
 
-    // Get unique classes for this month
-    const uniqueClasses = Array.from(
-      new Set(filteredSessions.map((s) => s["Tên lớp"] || ""))
-    ).filter((name) => name);
-
-    // Generate history table
-    let historyTableRows = "";
-    filteredSessions.forEach((session) => {
-      const studentRecord = session["Điểm danh"]?.find(
-        (r: any) => r["Student ID"] === userProfile.studentId
-      );
-      if (studentRecord) {
-        const date = dayjs(session["Ngày"]).format("DD/MM/YYYY");
-        const className = session["Tên lớp"] || "-";
-        const timeRange = `${session["Giờ bắt đầu"]} - ${session["Giờ kết thúc"]}`;
-        const statusText = getStatusText(studentRecord);
-        const statusColor = getStatusColor(studentRecord);
-        const score = studentRecord["Điểm kiểm tra"] ?? studentRecord["Điểm"] ?? "-";
-        const completed = studentRecord["Bài tập hoàn thành"];
-        const total = session["Bài tập"]?.["Tổng số bài"];
-        const homework = (completed !== undefined && total) ? `${completed}/${total}` : "-";
-        const note = studentRecord["Ghi chú"] || "-";
-
-        historyTableRows += `
-          <tr>
-            <td style="text-align: center;">${date}</td>
-            <td style="text-align: left;">${className}</td>
-            <td style="text-align: center;">${timeRange}</td>
-            <td style="text-align: center; color: ${statusColor}; font-weight: 500;">${statusText}</td>
-            <td style="text-align: center; font-weight: bold;">${score}</td>
-            <td style="text-align: center;">${homework}</td>
-            <td style="text-align: left; font-size: 10px;">${note}</td>
-          </tr>
-        `;
-      }
-    });
-
-    const content = `
-      <div class="watermark-container">
-        <div class="watermark-logo">
-          <img src="/img/logo.png" alt="Background Logo" />
-        </div>
-        <div class="report-content">
-          <div class="report-header">
-            <h1>BÁO CÁO HỌC TẬP THÁNG ${selectedMonth.format("MM/YYYY")}</h1>
-            <p>Ngày xuất: ${dayjs().format("DD/MM/YYYY HH:mm")}</p>
-          </div>
-
-      <div class="section">
-        <div class="section-title">Thông tin học sinh</div>
-        <table class="info-table">
-          <tr><th>Họ và tên</th><td><strong>${userProfile.studentName || student["Họ và tên"] || ""}</strong></td></tr>
-          <tr><th>Mã học sinh</th><td>${userProfile.studentCode || student["Mã học sinh"] || "-"}</td></tr>
-          <tr><th>Ngày sinh</th><td>${student["Ngày sinh"] ? dayjs(student["Ngày sinh"]).format("DD/MM/YYYY") : "-"}</td></tr>
-          <tr>
-            <th>Các lớp đang học</th>
-            <td>
-              <div class="classes-list">
-                ${uniqueClasses.map((name: string) => `<span class="class-tag">${name}</span>`).join("")}
-              </div>
-            </td>
-          </tr>
-          <tr><th>Số điện thoại</th><td>${student["Số điện thoại"] || "-"}</td></tr>
-          <tr><th>Email</th><td>${student["Email"] || "-"}</td></tr>
-        </table>
-      </div>
-
-      <div class="section">
-        <div class="section-title">Thống kê tháng ${selectedMonth.format("MM/YYYY")}</div>
-        <div class="stats-grid">
-          <div class="stat-card">
-            <div class="stat-value">${filteredSessions.length}</div>
-            <div class="stat-label">Tổng số buổi</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value" style="color: #52c41a;">${presentCount}</div>
-            <div class="stat-label">Số buổi có mặt</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value" style="color: #ff4d4f;">${absentCount}</div>
-            <div class="stat-label">Số buổi vắng</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value" style="color: #1890ff;">${attendanceRate}%</div>
-            <div class="stat-label">Tỷ lệ tham gia</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-value" style="color: #722ed1;">${avgScore}</div>
-            <div class="stat-label">Điểm trung bình</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="section">
-        <div class="section-title">Bảng điểm theo môn</div>
-        ${scoreTablesHTML || '<p style="color: #999; text-align: center;">Không có dữ liệu điểm trong tháng này</p>'}
-      </div>
-
-      <div class="section" style="page-break-before: auto;">
-        <div class="section-title">Lịch sử học tập chi tiết</div>
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th style="width: 80px;">Ngày</th>
-              <th style="width: 120px;">Lớp học</th>
-              <th style="width: 90px;">Giờ học</th>
-              <th style="width: 90px;">Trạng thái</th>
-              <th style="width: 50px;">Điểm</th>
-              <th style="width: 80px;">Bài tập</th>
-              <th>Ghi chú</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${historyTableRows || '<tr><td colspan="7" style="text-align: center; color: #999;">Không có dữ liệu</td></tr>'}
-          </tbody>
-        </table>
-      </div>
-
-      <div class="footer">
-        <p>Báo cáo được tạo tự động từ hệ thống quản lý học sinh.</p>
-        <p>Mọi thắc mắc xin liên hệ giáo viên phụ trách.</p>
-      </div>
-        </div>
-      </div>
-    `;
-
-    const styles = `
-      <style>
-        @page {
-          size: A4;
-          margin: 20mm;
-        }
-        body {
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-          color: #333;
-          line-height: 1.6;
-          background: #fff;
-        }
-        h1, h2, h3 {
-          margin: 0;
-          color: #004aad;
-        }
-        .report-header {
-          text-align: center;
-          border-bottom: 3px solid #004aad;
-          padding-bottom: 10px;
-          margin-bottom: 20px;
-        }
-        .report-header h1 {
-          font-size: 24px;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-        }
-        .report-header p {
-          font-size: 13px;
-          color: #666;
-        }
-        .section {
-          margin-bottom: 25px;
-        }
-        .section-title {
-          font-weight: bold;
-          color: #004aad;
-          border-left: 4px solid #004aad;
-          padding-left: 10px;
-          margin-bottom: 10px;
-          font-size: 16px;
-          text-transform: uppercase;
-        }
-        table {
-          width: 100%;
-          border-collapse: collapse;
-          margin-top: 8px;
-          font-size: 13px;
-        }
-        th, td {
-          border: 1px solid #ccc;
-          padding: 6px 8px;
-          text-align: left;
-          vertical-align: middle;
-        }
-        th {
-          background-color: #004aad;
-          color: #fff;
-          text-align: center;
-        }
-        tr:nth-child(even) {
-          background-color: #f8f9fa;
-        }
-        .stats-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-          gap: 8px;
-          margin-top: 10px;
-        }
-        .stat-card {
-          border: 1px solid #ddd;
-          border-radius: 6px;
-          padding: 6px 8px;
-          background: #fafafa;
-          text-align: center;
-        }
-        .stat-value {
-          font-size: 16px;
-          font-weight: 600;
-          color: #004aad;
-        }
-        .stat-label {
-          font-size: 12px;
-          color: #666;
-        }
-        .info-table th { background: #f0f0f0; color: #333; text-align: left; width: 130px; }
-        .subject-section { margin-bottom: 15px; }
-        .subject-header {
-          background: linear-gradient(135deg, #e6f7ff 0%, #bae7ff 100%);
-          padding: 8px 12px;
-          border-left: 4px solid #1890ff;
-          border-radius: 4px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 6px;
-        }
-        .subject-name { font-weight: bold; font-size: 13px; color: #004aad; }
-        .subject-avg { font-size: 12px; color: #666; }
-        .score-table th { background-color: #f5f5f5; color: #333; font-size: 11px; }
-        .score-table td { font-size: 11px; }
-        .history-table { margin-top: 10px; }
-        .history-table th { background-color: #004aad; color: #fff; font-size: 11px; }
-        .history-table td { font-size: 11px; }
-        .classes-list {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 5px;
-          margin-top: 5px;
-        }
-        .class-tag {
-          background: #e6f7ff;
-          color: #1890ff;
-          padding: 2px 8px;
-          border-radius: 4px;
-          font-size: 11px;
-        }
-        .footer {
-          margin-top: 40px;
-          text-align: center;
-          font-size: 12px;
-          color: #888;
-          border-top: 1px solid #ccc;
-          padding-top: 10px;
-        }
-        .watermark-container { position: relative; }
-        .watermark-logo {
-          position: absolute;
-          top: 50%;
-          left: 50%;
-          transform: translate(-50%, -50%);
-          z-index: 0;
-          pointer-events: none;
-        }
-        .watermark-logo img {
-          width: 600px;
-          height: 600px;
-          max-width: 80vw;
-          object-fit: contain;
-          opacity: 0.22;
-          filter: grayscale(25%);
-        }
-        .report-content { position: relative; z-index: 1; }
-        @media print {
-          body { margin: 0; }
-          .watermark-logo {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            z-index: 0;
-            pointer-events: none;
-          }
-          .watermark-logo img {
-            width: 650px;
-            height: 650px;
-            opacity: 0.25;
-            filter: grayscale(25%);
-          }
-        }
-      </style>
-    `;
-
-    printWindow.document.write(`
-      <html>
-        <head>
-          <meta charset="UTF-8" />
-          <title>Báo cáo tháng ${selectedMonth.format("MM/YYYY")} - ${userProfile.studentName}</title>
-          ${styles}
-        </head>
-        <body>
-          ${content}
-        </body>
-      </html>
-    `);
-
-    printWindow.document.close();
-    printWindow.focus();
-    setTimeout(() => {
-      printWindow.print();
-    }, 400);
+    return events.sort((a, b) => a.startTime.localeCompare(b.startTime));
   };
+
+  // Get all events for current week
+  const weekSchedules = useMemo(() => {
+    const result: { [key: number]: any[] } = {};
+    weekDays.forEach((day, index) => {
+      result[index] = getScheduleForDate(day);
+    });
+    return result;
+  }, [weekDays, classes]);
 
   // Prepare calendar data
   const calendarData = useMemo(() => {
@@ -1242,10 +597,220 @@ const ParentPortal: React.FC = () => {
           <Tabs
             items={[
               {
+                key: "schedule-timeline",
+                label: (
+                  <span>
+                    <CalendarOutlined /> Lịch theo tuần
+                  </span>
+                ),
+                children: (
+                  <div>
+                    {/* Week Navigation */}
+                    <Card style={{ marginBottom: 16 }}>
+                      <Space>
+                        <Button 
+                          onClick={() => setCurrentWeekStart(currentWeekStart.subtract(1, "week"))}
+                        >
+                          Tuần trước
+                        </Button>
+                        <Text strong>
+                          {currentWeekStart.format("DD/MM")} - {currentWeekStart.add(6, "day").format("DD/MM/YYYY")}
+                        </Text>
+                        <Button 
+                          onClick={() => setCurrentWeekStart(currentWeekStart.add(1, "week"))}
+                        >
+                          Tuần sau
+                        </Button>
+                        <Button 
+                          type="dashed"
+                          onClick={() => setCurrentWeekStart(dayjs().startOf("isoWeek"))}
+                        >
+                          Hôm nay
+                        </Button>
+                      </Space>
+                    </Card>
+
+                    {/* Schedule Timeline Grid */}
+                    <div style={{ overflow: "auto", backgroundColor: "white", border: "1px solid #f0f0f0", borderRadius: "8px" }}>
+                      <div style={{ display: "flex", minWidth: "fit-content" }}>
+                        {/* Time Column */}
+                        <div style={{ width: "60px", flexShrink: 0, borderRight: "1px solid #f0f0f0", backgroundColor: "#fafafa" }}>
+                          <div style={{ 
+                            height: "60px", 
+                            borderBottom: "1px solid #f0f0f0",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: "11px",
+                            color: "#999"
+                          }}>
+                            GMT+07
+                          </div>
+                          {HOUR_SLOTS.map((slot) => (
+                            <div
+                              key={slot.hour}
+                              style={{
+                                height: "60px",
+                                borderBottom: "1px solid #f0f0f0",
+                                display: "flex",
+                                alignItems: "flex-start",
+                                justifyContent: "flex-end",
+                                paddingRight: "8px",
+                                paddingTop: "4px",
+                                fontSize: "11px",
+                                color: "#666",
+                              }}
+                            >
+                              {slot.label}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Day Columns */}
+                        {weekDays.map((day, dayIndex) => {
+                          const dayEvents = weekSchedules[dayIndex] || [];
+                          const isToday = day.isSame(dayjs(), "day");
+
+                          return (
+                            <div
+                              key={dayIndex}
+                              style={{
+                                flex: 1,
+                                minWidth: "140px",
+                                borderRight: dayIndex < 6 ? "1px solid #f0f0f0" : "none",
+                                position: "relative",
+                              }}
+                            >
+                              {/* Day Header */}
+                              <div
+                                style={{
+                                  height: "60px",
+                                  borderBottom: "1px solid #f0f0f0",
+                                  backgroundColor: isToday ? "#e6f7ff" : "#fafafa",
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  position: "sticky",
+                                  top: 0,
+                                  zIndex: 10,
+                                }}
+                              >
+                                <div style={{ fontSize: "12px", color: "#666", textTransform: "capitalize" }}>
+                                  {day.format("dddd")}
+                                </div>
+                                <div style={{ 
+                                  fontSize: "20px", 
+                                  fontWeight: "bold",
+                                  color: isToday ? "#1890ff" : "#333",
+                                  width: "36px",
+                                  height: "36px",
+                                  borderRadius: "50%",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  backgroundColor: isToday ? "#1890ff" : "transparent",
+                                  ...(isToday && { color: "white" })
+                                }}>
+                                  {day.format("D")}
+                                </div>
+                              </div>
+
+                              {/* Hour Grid with Events */}
+                              <div
+                                style={{
+                                  position: "relative",
+                                  height: `${HOUR_SLOTS.length * 60}px`,
+                                  backgroundColor: isToday ? "#fafffe" : "white",
+                                }}
+                              >
+                                {/* Hour slots background */}
+                                {HOUR_SLOTS.map((slot) => (
+                                  <div
+                                    key={slot.hour}
+                                    style={{
+                                      height: "60px",
+                                      borderBottom: "1px solid #f0f0f0",
+                                      position: "relative",
+                                    }}
+                                  />
+                                ))}
+
+                                {/* Events */}
+                                {dayEvents.map((event, eventIdx) => {
+                                  const [startHour, startMin] = event.startTime.split(":").map(Number);
+                                  const [endHour, endMin] = event.endTime.split(":").map(Number);
+                                  const startSlotIdx = Math.max(0, startHour - 6);
+                                  const topOffset = startSlotIdx * 60 + (startMin / 60) * 60;
+                                  const durationHours = (endHour - startHour) + (endMin - startMin) / 60;
+                                  const height = Math.max(60, durationHours * 60);
+
+                                  return (
+                                    <div
+                                      key={eventIdx}
+                                      onClick={() => {
+                                        setSelectedScheduleEvent({
+                                          ...event,
+                                          date: day.format("DD/MM/YYYY"),
+                                          dayName: day.format("dddd")
+                                        });
+                                        setScheduleDetailModalOpen(true);
+                                      }}
+                                      style={{
+                                        position: "absolute",
+                                        top: `${topOffset}px`,
+                                        left: "4px",
+                                        right: "4px",
+                                        height: `${height}px`,
+                                        backgroundColor: "#e6f7ff",
+                                        border: "1px solid #1890ff",
+                                        borderRadius: "4px",
+                                        padding: "4px 8px",
+                                        overflow: "hidden",
+                                        fontSize: "11px",
+                                        cursor: "pointer",
+                                        transition: "all 0.3s ease",
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        e.currentTarget.style.backgroundColor = "#bae7ff";
+                                        e.currentTarget.style.boxShadow = "0 2px 8px rgba(24, 144, 255, 0.3)";
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.backgroundColor = "#e6f7ff";
+                                        e.currentTarget.style.boxShadow = "none";
+                                      }}
+                                    >
+                                      <div style={{ fontWeight: "bold", color: "#1890ff" }}>
+                                        {subjectMap[event.subject] || event.subject}
+                                      </div>
+                                      <div style={{ fontSize: "10px", color: "#666" }}>
+                                        {event.startTime} - {event.endTime}
+                                      </div>
+                                      <div style={{ fontSize: "10px", color: "#666" }}>
+                                        {event.className}
+                                      </div>
+                                      {event.location && (
+                                        <div style={{ fontSize: "10px", color: "#666" }}>
+                                          📍 {event.location}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ),
+              },
+              {
                 key: "schedule",
                 label: (
                   <span>
-                    <CalendarOutlined /> Lịch học
+                    <CalendarOutlined /> Lịch học (Lịch tháng)
                   </span>
                 ),
                 children: (
@@ -1909,13 +1474,6 @@ const ParentPortal: React.FC = () => {
                           title="Nhận xét chung"
                           extra={
                             <Space>
-                              <Button
-                                type="primary"
-                                icon={<FileTextOutlined />}
-                                onClick={handlePrintFullReport}
-                              >
-                                Xem báo cáo toàn bộ
-                              </Button>
                               <DatePicker
                                 picker="month"
                                 format="MM/YYYY"
@@ -1924,14 +1482,6 @@ const ParentPortal: React.FC = () => {
                                 onChange={(date) => setSelectedMonth(date)}
                                 style={{ width: 120 }}
                               />
-                              <Button
-                                type="default"
-                                icon={<FileTextOutlined />}
-                                onClick={handlePrintMonthlyReport}
-                                disabled={!selectedMonth}
-                              >
-                                Xem báo cáo tháng
-                              </Button>
                             </Space>
                           }
                         >
@@ -2210,6 +1760,107 @@ const ParentPortal: React.FC = () => {
           />
         </Card>
       </div>
+
+      {/* Schedule Event Detail Modal */}
+      <Modal
+        title={
+          selectedScheduleEvent ? (
+            <div>
+              <div style={{ fontSize: "16px", fontWeight: "bold", color: "#1890ff" }}>
+                {subjectMap[selectedScheduleEvent.subject] || selectedScheduleEvent.subject}
+              </div>
+              <div style={{ fontSize: "12px", color: "#666", marginTop: "4px" }}>
+                {selectedScheduleEvent.dayName}, {selectedScheduleEvent.date}
+              </div>
+            </div>
+          ) : null
+        }
+        open={scheduleDetailModalOpen}
+        onCancel={() => setScheduleDetailModalOpen(false)}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setScheduleDetailModalOpen(false)}>
+            Đóng
+          </Button>,
+        ]}
+        width={600}
+      >
+        {selectedScheduleEvent && (
+          <Space direction="vertical" style={{ width: "100%" }} size="large">
+            {/* Class Info Card */}
+            <Card size="small" style={{ backgroundColor: "#f6f9ff", border: "1px solid #bae7ff" }}>
+              <Row gutter={16}>
+                <Col span={12}>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: "12px", textTransform: "uppercase" }}>
+                      Lớp học
+                    </Text>
+                    <div style={{ fontSize: "14px", fontWeight: "600", color: "#333", marginTop: "4px" }}>
+                      {selectedScheduleEvent.className}
+                    </div>
+                  </div>
+                </Col>
+                <Col span={12}>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: "12px", textTransform: "uppercase" }}>
+                      Giáo viên
+                    </Text>
+                    <div style={{ fontSize: "14px", fontWeight: "600", color: "#333", marginTop: "4px" }}>
+                      {selectedScheduleEvent.teacher}
+                    </div>
+                  </div>
+                </Col>
+              </Row>
+            </Card>
+
+            {/* Time & Location Info */}
+            <Card size="small">
+              <Descriptions column={1} size="small">
+                <Descriptions.Item 
+                  label={<ClockCircleOutlined style={{ marginRight: "8px", color: "#1890ff" }} />}
+                >
+                  <strong>{selectedScheduleEvent.startTime} - {selectedScheduleEvent.endTime}</strong>
+                </Descriptions.Item>
+                {selectedScheduleEvent.location && (
+                  <Descriptions.Item 
+                    label={<span style={{ marginRight: "8px" }}>📍</span>}
+                  >
+                    {selectedScheduleEvent.location}
+                  </Descriptions.Item>
+                )}
+              </Descriptions>
+            </Card>
+
+            {/* Class Details */}
+            <Card size="small" title={<span style={{ fontSize: "13px", fontWeight: "600" }}>Thông tin lớp</span>}>
+              <Descriptions column={1} size="small">
+                <Descriptions.Item label="Mã lớp">
+                  {selectedScheduleEvent.class?.["Mã lớp"] || "-"}
+                </Descriptions.Item>
+                <Descriptions.Item label="Khối">
+                  {selectedScheduleEvent.class?.["Khối"] || "-"}
+                </Descriptions.Item>
+                <Descriptions.Item label="Trạng thái">
+                  <Tag color={selectedScheduleEvent.class?.["Trạng thái"] === "active" ? "green" : "red"}>
+                    {selectedScheduleEvent.class?.["Trạng thái"] === "active" ? "Đang học" : "Đã kết thúc"}
+                  </Tag>
+                </Descriptions.Item>
+                {selectedScheduleEvent.class?.["Số lượng học sinh"] && (
+                  <Descriptions.Item label="Số lượng học sinh">
+                    {selectedScheduleEvent.class["Số lượng học sinh"]} / {selectedScheduleEvent.class["Sức chứa"] || "-"}
+                  </Descriptions.Item>
+                )}
+              </Descriptions>
+            </Card>
+
+            {/* Action Buttons */}
+            <div style={{ textAlign: "center" }}>
+              <Text type="secondary" style={{ fontSize: "12px" }}>
+                Để đăng ký hoặc cập nhật, vui lòng liên hệ giáo viên hoặc phòng quản lý
+              </Text>
+            </div>
+          </Space>
+        )}
+      </Modal>
     </div>
   );
 };
