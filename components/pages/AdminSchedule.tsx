@@ -66,6 +66,18 @@ interface TimetableEntry {
   "Thay thế thứ"?: number; // Thứ gốc bị thay thế
 }
 
+interface StaffSchedule {
+  id: string;
+  "Tên": string; // Fixed: "Nhân viên trực trung tâm"
+  "Thứ": number; // Day of week (2-8, 2=Monday, 8=Sunday)
+  "Giờ bắt đầu": string;
+  "Giờ kết thúc": string;
+  "Ghi chú"?: string;
+  "Ngày"?: string; // Specific date for makeup schedule (YYYY-MM-DD)
+  "Thay thế ngày"?: string; // Replaced original date
+  "Thay thế thứ"?: number; // Replaced original day
+}
+
 type FilterMode = "class" | "subject" | "teacher" | "location";
 
 // Generate hourly time slots from 6:00 to 22:00
@@ -95,6 +107,13 @@ const AdminSchedule = () => {
   const [editForm] = Form.useForm();
   const [draggingEvent, setDraggingEvent] = useState<ScheduleEvent | null>(null);
   const [dragOverCell, setDragOverCell] = useState<string | null>(null); // "dayIndex_slotIndex"
+  
+  // Staff schedule states
+  const [staffSchedules, setStaffSchedules] = useState<Map<string, StaffSchedule>>(new Map());
+  const [isStaffScheduleModalOpen, setIsStaffScheduleModalOpen] = useState(false);
+  const [editingStaffSchedule, setEditingStaffSchedule] = useState<StaffSchedule | null>(null);
+  const [staffScheduleForm] = Form.useForm();
+  const [draggingStaffSchedule, setDraggingStaffSchedule] = useState<StaffSchedule | null>(null);
   
   // State cho modal xác nhận loại sửa đổi
   const [confirmModalVisible, setConfirmModalVisible] = useState(false);
@@ -161,6 +180,24 @@ const AdminSchedule = () => {
         setAttendanceSessions(sessionsArray);
       } else {
         setAttendanceSessions([]);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Load staff schedules from Lịch_trực_trung_tâm
+  useEffect(() => {
+    const staffScheduleRef = ref(database, "datasheet/Lịch_trực_trung_tâm");
+    const unsubscribe = onValue(staffScheduleRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const schedulesMap = new Map<string, StaffSchedule>();
+        Object.entries(data).forEach(([id, value]: [string, any]) => {
+          schedulesMap.set(id, { id, ...value });
+        });
+        setStaffSchedules(schedulesMap);
+      } else {
+        setStaffSchedules(new Map());
       }
     });
     return () => unsubscribe();
@@ -363,6 +400,73 @@ const AdminSchedule = () => {
     });
 
     return events;
+  };
+
+  // Get staff schedules for a specific date
+  const getStaffSchedulesForDate = (date: Dayjs): StaffSchedule[] => {
+    const dayOfWeek = date.day() === 0 ? 8 : date.day() + 1;
+    const dateStr = date.format("YYYY-MM-DD");
+    const staffSchedulesList: StaffSchedule[] = [];
+    
+    // Collect all makeup/date-specific schedules for this date
+    const makeupSchedulesForDate: StaffSchedule[] = [];
+    const replacedBaseSchedules = new Set<string>(); // Track base schedules that should be hidden
+    
+    staffSchedules.forEach((schedule) => {
+      // Case 1: Makeup schedule for this exact date (moved TO this date)
+      if (schedule["Ngày"] === dateStr) {
+        makeupSchedulesForDate.push(schedule);
+        
+        // Hide base schedule at the NEW location (to avoid duplicate)
+        const baseKey = `${schedule["Thứ"]}_${schedule["Giờ bắt đầu"]}_${schedule["Giờ kết thúc"]}`;
+        replacedBaseSchedules.add(baseKey);
+      }
+      
+      // Case 2: Makeup schedule that replaced THIS date (moved FROM this date)
+      if (schedule["Thay thế ngày"] === dateStr && schedule["Thay thế thứ"] === dayOfWeek) {
+        // Hide base schedule at the OLD location (schedule was moved away)
+        const baseKey = `${dayOfWeek}_${schedule["Giờ bắt đầu"]}_${schedule["Giờ kết thúc"]}`;
+        replacedBaseSchedules.add(baseKey);
+      }
+    });
+    
+    // Add all makeup schedules for this date
+    staffSchedulesList.push(...makeupSchedulesForDate);
+    
+    // Add base schedules (recurring by day of week) only if not replaced
+    staffSchedules.forEach((schedule) => {
+      if (!schedule["Ngày"] && schedule["Thứ"] === dayOfWeek) {
+        // This is a base recurring schedule
+        const baseKey = `${dayOfWeek}_${schedule["Giờ bắt đầu"]}_${schedule["Giờ kết thúc"]}`;
+        
+        // Only add if not replaced by any makeup schedule
+        if (!replacedBaseSchedules.has(baseKey)) {
+          staffSchedulesList.push(schedule);
+        }
+      }
+    });
+    
+    return staffSchedulesList;
+  };
+
+  // Helper to calculate staff schedule position
+  const getStaffScheduleStyle = (schedule: StaffSchedule) => {
+    const startTime = schedule["Giờ bắt đầu"];
+    const endTime = schedule["Giờ kết thúc"];
+    
+    if (!startTime || !endTime) return { top: 0, height: 60 };
+    
+    const [startHour, startMin] = startTime.split(':').map(Number);
+    const [endHour, endMin] = endTime.split(':').map(Number);
+    
+    const startOffset = (startHour - 6) * 60 + startMin;
+    const endOffset = (endHour - 6) * 60 + endMin;
+    const duration = endOffset - startOffset;
+    
+    const top = startOffset;
+    const height = Math.max(duration, 30);
+    
+    return { top, height };
   };
 
   // Helper to calculate event position and height based on time
@@ -838,6 +942,123 @@ const AdminSchedule = () => {
     e.preventDefault();
     setDragOverCell(null);
 
+    // Handle staff schedule drop
+    if (draggingStaffSchedule) {
+      // Capture dragged schedule into local variable to avoid closure issues
+      const draggedSchedule = draggingStaffSchedule;
+      const newDayOfWeek = targetDate.day() === 0 ? 8 : targetDate.day() + 1;
+      const oldDayOfWeek = draggedSchedule["Thứ"];
+
+      // Nếu drop vào cùng thứ thì không làm gì
+      if (newDayOfWeek === oldDayOfWeek) {
+        setDraggingStaffSchedule(null);
+        return;
+      }
+
+      const oldDayName = ["", "", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"][oldDayOfWeek];
+      const newDayName = ["", "", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7", "Chủ nhật"][newDayOfWeek];
+      const timeRange = `${draggedSchedule["Giờ bắt đầu"]}-${draggedSchedule["Giờ kết thúc"]}`;
+
+      // Clear dragging state immediately
+      setDraggingStaffSchedule(null);
+
+      // Hỏi người dùng muốn di chuyển lịch này hay tất cả giờ ấy
+      Modal.confirm({
+        title: "Chuyển lịch trực",
+        content: (
+          <div>
+            <p>Chọn cách di chuyển:</p>
+            <ul style={{ marginLeft: "20px" }}>
+              <li><strong>Lịch này:</strong> Chỉ di chuyển lịch vừa kéo từ {oldDayName} sang {newDayName}</li>
+              <li><strong>Tất cả lịch ({timeRange}):</strong> Di chuyển tất cả lịch trực cùng khung giờ {timeRange} từ {oldDayName} sang {newDayName}</li>
+            </ul>
+          </div>
+        ),
+        okText: "Lịch này",
+        cancelText: "Hủy",
+        width: 600,
+        okButtonProps: { type: "primary" },
+        footer: (_, { OkBtn, CancelBtn }) => (
+          <>
+            <CancelBtn />
+            <Button
+              onClick={async () => {
+                try {
+                  // Move all staff schedules with same day and time
+                  const schedulesToUpdate: string[] = [];
+                  staffSchedules.forEach((schedule) => {
+                    if (
+                      schedule["Thứ"] === oldDayOfWeek &&
+                      schedule["Giờ bắt đầu"] === draggedSchedule["Giờ bắt đầu"] &&
+                      schedule["Giờ kết thúc"] === draggedSchedule["Giờ kết thúc"]
+                    ) {
+                      schedulesToUpdate.push(schedule.id);
+                    }
+                  });
+
+                  for (const scheduleId of schedulesToUpdate) {
+                    const scheduleRef = ref(database, `datasheet/Lịch_trực_trung_tâm/${scheduleId}`);
+                    await update(scheduleRef, { "Thứ": newDayOfWeek });
+                  }
+
+                  message.success(`Đã chuyển ${schedulesToUpdate.length} lịch trực từ ${oldDayName} sang ${newDayName}`);
+                  Modal.destroyAll();
+                } catch (error) {
+                  console.error("Error moving all staff schedules:", error);
+                  message.error("Lỗi khi chuyển lịch trực");
+                }
+              }}
+            >
+              Tất cả lịch
+            </Button>
+            <OkBtn />
+          </>
+        ),
+        onOk: async () => {
+          try {
+            const targetDateStr = targetDate.format("YYYY-MM-DD");
+
+            // Check if this is a base schedule (no "Ngày") or date-specific schedule
+            if (!draggedSchedule["Ngày"]) {
+              // Compute the original date (in the currently displayed week) for the base schedule
+              // Map Thứ (2..8) to week index 0..6 relative to currentWeekStart
+              const oldDateStr = currentWeekStart.add(oldDayOfWeek - 2, 'day').format("YYYY-MM-DD");
+
+              // Moving a base schedule to specific date - create makeup schedule
+              const makeupScheduleData: Partial<StaffSchedule> = {
+                "Tên": "Nhân viên trực trung tâm",
+                "Thứ": newDayOfWeek,
+                "Giờ bắt đầu": draggedSchedule["Giờ bắt đầu"],
+                "Giờ kết thúc": draggedSchedule["Giờ kết thúc"],
+                "Ghi chú": draggedSchedule["Ghi chú"] || "",
+                "Ngày": targetDateStr, // Mark as date-specific
+                "Thay thế ngày": oldDateStr, // Track original date being replaced (important)
+                "Thay thế thứ": oldDayOfWeek, // Track original day
+              };
+
+              const schedulesRef = ref(database, "datasheet/Lịch_trực_trung_tâm");
+              await push(schedulesRef, makeupScheduleData);
+              message.success(`Đã chuyển lịch trực từ ${oldDayName} sang ${newDayName} cho ngày này`);
+            } else {
+              // Moving an existing date-specific schedule
+              const scheduleRef = ref(database, `datasheet/Lịch_trực_trung_tâm/${draggedSchedule.id}`);
+              await update(scheduleRef, { 
+                "Thứ": newDayOfWeek,
+                "Ngày": targetDateStr,
+              });
+              message.success(`Đã chuyển lịch trực từ ${oldDayName} sang ${newDayName}`);
+            }
+          } catch (error) {
+            console.error("Error moving staff schedule:", error);
+            message.error("Lỗi khi chuyển lịch trực");
+          }
+        },
+      });
+
+      return;
+    }
+
+    // Handle class schedule drop
     if (!draggingEvent) return;
 
     const newDateStr = targetDate.format("YYYY-MM-DD");
@@ -992,6 +1213,17 @@ const AdminSchedule = () => {
                 </span>
               </Space>
               <Space>
+                <Button 
+                  type="primary"
+                  style={{ backgroundColor: "#ff9800", borderColor: "#ff9800" }}
+                  onClick={() => {
+                    setEditingStaffSchedule(null);
+                    staffScheduleForm.resetFields();
+                    setIsStaffScheduleModalOpen(true);
+                  }}
+                >
+                  + Thêm lịch trực
+                </Button>
                 <Button onClick={goToToday}>Hôm nay</Button>
                 <Button icon={<RightOutlined />} onClick={goToNextWeek}>
                   Tuần sau
@@ -1253,6 +1485,99 @@ const AdminSchedule = () => {
                           </div>
                         );
                       })}
+
+                      {/* Staff Schedules - Only for Admin */}
+                      {getStaffSchedulesForDate(day).map((staffSchedule, idx) => {
+                        const { top, height } = getStaffScheduleStyle(staffSchedule);
+                        const isDragging = draggingStaffSchedule?.id === staffSchedule.id;
+
+                        return (
+                          <div
+                            key={`staff_${staffSchedule.id}_${idx}`}
+                            draggable
+                            onDragStart={(e) => {
+                              setDraggingStaffSchedule(staffSchedule);
+                              e.dataTransfer.effectAllowed = "move";
+                            }}
+                            onDragEnd={() => setDraggingStaffSchedule(null)}
+                            style={{
+                              position: "absolute",
+                              top: top,
+                              left: "2px",
+                              right: "2px",
+                              height: Math.max(height, 50),
+                              backgroundColor: "#fff4e6",
+                              borderLeft: "3px solid #ff9800",
+                              borderRadius: "4px",
+                              padding: "4px 6px",
+                              fontSize: "11px",
+                              overflow: "hidden",
+                              cursor: "pointer",
+                              opacity: isDragging ? 0.5 : 1,
+                              zIndex: 3,
+                              boxShadow: "0 1px 2px rgba(255,152,0,0.2)",
+                              transition: "all 0.2s",
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.boxShadow = "0 2px 8px rgba(255,152,0,0.3)";
+                              e.currentTarget.style.zIndex = "16";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.boxShadow = "0 1px 2px rgba(255,152,0,0.2)";
+                              e.currentTarget.style.zIndex = "3";
+                            }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditingStaffSchedule(staffSchedule);
+                              staffScheduleForm.setFieldsValue({
+                                schedules: [
+                                  {
+                                    day: staffSchedule["Thứ"],
+                                    startTime: dayjs(staffSchedule["Giờ bắt đầu"], "HH:mm"),
+                                    endTime: dayjs(staffSchedule["Giờ kết thúc"], "HH:mm"),
+                                    note: staffSchedule["Ghi chú"] || "",
+                                  }
+                                ],
+                              });
+                              setIsStaffScheduleModalOpen(true);
+                            }}
+                          >
+                            <Popover
+                              content={
+                                <div style={{ maxWidth: "250px" }}>
+                                  <div style={{ fontWeight: "bold", marginBottom: "8px", color: "#ff9800" }}>
+                                    🏢 {staffSchedule["Tên"]}
+                                  </div>
+                                  <div style={{ fontSize: "12px", marginBottom: "4px" }}>
+                                    🕐 {staffSchedule["Giờ bắt đầu"]} - {staffSchedule["Giờ kết thúc"]}
+                                  </div>
+                                  {staffSchedule["Ghi chú"] && (
+                                    <div style={{ fontSize: "12px", color: "#666", marginTop: "4px", fontStyle: "italic" }}>
+                                      📝 {staffSchedule["Ghi chú"]}
+                                    </div>
+                                  )}
+                                  <div style={{ fontSize: "11px", color: "#999", marginTop: "8px", borderTop: "1px solid #f0f0f0", paddingTop: "8px" }}>
+                                    Click để chỉnh sửa hoặc xóa
+                                  </div>
+                                </div>
+                              }
+                              trigger="hover"
+                            >
+                              <div style={{ fontWeight: "600", color: "#ff9800", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                🏢 Trực trung tâm
+                              </div>
+                              <div style={{ fontSize: "10px", color: "#666", marginTop: "1px" }}>
+                                {staffSchedule["Giờ bắt đầu"]} - {staffSchedule["Giờ kết thúc"]}
+                              </div>
+                              {height > 60 && staffSchedule["Ghi chú"] && (
+                                <div style={{ color: "#999", fontSize: "10px", marginTop: "2px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                  📝 {staffSchedule["Ghi chú"]}
+                                </div>
+                              )}
+                            </Popover>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 );
@@ -1414,6 +1739,218 @@ const AdminSchedule = () => {
           <Form.Item label="Ghi chú" name="Ghi chú">
             <Input.TextArea rows={2} placeholder="Nhập ghi chú (tùy chọn)" />
           </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Staff Schedule Modal */}
+      <Modal
+        title={
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <span style={{ fontSize: "20px" }}>🏢</span>
+            <span>{editingStaffSchedule ? "Chỉnh sửa lịch trực" : "Thêm lịch trực trung tâm"}</span>
+          </div>
+        }
+        open={isStaffScheduleModalOpen}
+        onCancel={() => {
+          setIsStaffScheduleModalOpen(false);
+          setEditingStaffSchedule(null);
+          staffScheduleForm.resetFields();
+        }}
+        onOk={() => staffScheduleForm.submit()}
+        okText={editingStaffSchedule ? "Cập nhật" : "Thêm lịch"}
+        cancelText="Hủy"
+        width={500}
+        footer={
+          <Space>
+            {editingStaffSchedule && (
+              <Button
+                danger
+                onClick={async () => {
+                  Modal.confirm({
+                    title: "Xác nhận xóa",
+                    content: "Bạn có chắc muốn xóa lịch trực này?",
+                    okText: "Xóa",
+                    cancelText: "Hủy",
+                    okButtonProps: { danger: true },
+                    onOk: async () => {
+                      try {
+                        const scheduleRef = ref(database, `datasheet/Lịch_trực_trung_tâm/${editingStaffSchedule.id}`);
+                        await remove(scheduleRef);
+                        message.success("Đã xóa lịch trực");
+                        setIsStaffScheduleModalOpen(false);
+                        setEditingStaffSchedule(null);
+                        staffScheduleForm.resetFields();
+                      } catch (error) {
+                        console.error("Error deleting staff schedule:", error);
+                        message.error("Lỗi khi xóa lịch trực");
+                      }
+                    },
+                  });
+                }}
+              >
+                Xóa lịch
+              </Button>
+            )}
+            <Button onClick={() => {
+              setIsStaffScheduleModalOpen(false);
+              setEditingStaffSchedule(null);
+              staffScheduleForm.resetFields();
+            }}>
+              Hủy
+            </Button>
+            <Button type="primary" onClick={() => staffScheduleForm.submit()}>
+              {editingStaffSchedule ? "Cập nhật" : "Thêm lịch"}
+            </Button>
+          </Space>
+        }
+      >
+        <Form
+          form={staffScheduleForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            try {
+              if (editingStaffSchedule) {
+                // Update existing - only one schedule
+                const scheduleData: Partial<StaffSchedule> = {
+                  "Tên": "Nhân viên trực trung tâm",
+                  "Thứ": values.schedules[0].day,
+                  "Giờ bắt đầu": values.schedules[0].startTime.format("HH:mm"),
+                  "Giờ kết thúc": values.schedules[0].endTime.format("HH:mm"),
+                  "Ghi chú": values.schedules[0].note || "",
+                };
+                const scheduleRef = ref(database, `datasheet/Lịch_trực_trung_tâm/${editingStaffSchedule.id}`);
+                await update(scheduleRef, scheduleData);
+                message.success("Đã cập nhật lịch trực");
+              } else {
+                // Create new - can create multiple with different times
+                const schedulesRef = ref(database, "datasheet/Lịch_trực_trung_tâm");
+                
+                // values.schedules is an array of {day, startTime, endTime, note}
+                for (const schedule of values.schedules || []) {
+                  const scheduleData: Partial<StaffSchedule> = {
+                    "Tên": "Nhân viên trực trung tâm",
+                    "Thứ": schedule.day,
+                    "Giờ bắt đầu": schedule.startTime.format("HH:mm"),
+                    "Giờ kết thúc": schedule.endTime.format("HH:mm"),
+                    "Ghi chú": schedule.note || "",
+                  };
+                  await push(schedulesRef, scheduleData);
+                }
+                
+                message.success(`Đã thêm ${values.schedules?.length || 0} lịch trực`);
+              }
+
+              setIsStaffScheduleModalOpen(false);
+              setEditingStaffSchedule(null);
+              staffScheduleForm.resetFields();
+            } catch (error) {
+              console.error("Error saving staff schedule:", error);
+              message.error("Lỗi khi lưu lịch trực");
+            }
+          }}
+        >
+          {!editingStaffSchedule && (
+            <div style={{ marginBottom: "16px", padding: "12px", backgroundColor: "#f5f5f5", borderRadius: "8px" }}>
+              <div style={{ fontSize: "13px", color: "#666", marginBottom: "8px" }}>
+                ✨ <strong>Tip:</strong> Thêm lịch trực cho nhiều thứ với giờ khác nhau. Mỗi thứ có thể có khung giờ riêng.
+              </div>
+            </div>
+          )}
+
+          <Form.List
+            name="schedules"
+            rules={[
+              {
+                validator: async (_, schedules) => {
+                  if (!schedules || schedules.length < 1) {
+                    return Promise.reject(new Error("Vui lòng thêm ít nhất một lịch trực"));
+                  }
+                },
+              },
+            ]}
+          >
+            {(fields, { add, remove }) => (
+              <>
+                {fields.map((field, index) => (
+                  <Card
+                    key={field.key}
+                    size="small"
+                    style={{ marginBottom: "12px" }}
+                    extra={
+                      fields.length > 1 && (
+                        <Button
+                          type="text"
+                          danger
+                          onClick={() => remove(field.name)}
+                          style={{ padding: "4px 8px", height: "auto" }}
+                        >
+                          Xóa
+                        </Button>
+                      )
+                    }
+                  >
+                    <Form.Item
+                      {...field}
+                      label="Thứ"
+                      name={[field.name, "day"]}
+                      rules={[{ required: true, message: "Chọn thứ" }]}
+                    >
+                      <Select placeholder="Chọn thứ">
+                        <Select.Option value={2}>Thứ 2</Select.Option>
+                        <Select.Option value={3}>Thứ 3</Select.Option>
+                        <Select.Option value={4}>Thứ 4</Select.Option>
+                        <Select.Option value={5}>Thứ 5</Select.Option>
+                        <Select.Option value={6}>Thứ 6</Select.Option>
+                        <Select.Option value={7}>Thứ 7</Select.Option>
+                        <Select.Option value={8}>Chủ nhật</Select.Option>
+                      </Select>
+                    </Form.Item>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                      <Form.Item
+                        {...field}
+                        label="Giờ bắt đầu"
+                        name={[field.name, "startTime"]}
+                        rules={[{ required: true, message: "Chọn giờ bắt đầu" }]}
+                      >
+                        <TimePicker format="HH:mm" style={{ width: "100%" }} />
+                      </Form.Item>
+
+                      <Form.Item
+                        {...field}
+                        label="Giờ kết thúc"
+                        name={[field.name, "endTime"]}
+                        rules={[{ required: true, message: "Chọn giờ kết thúc" }]}
+                      >
+                        <TimePicker format="HH:mm" style={{ width: "100%" }} />
+                      </Form.Item>
+                    </div>
+
+                    <Form.Item
+                      {...field}
+                      label="Ghi chú"
+                      name={[field.name, "note"]}
+                    >
+                      <Input.TextArea rows={2} placeholder="Ghi chú (tùy chọn)" />
+                    </Form.Item>
+                  </Card>
+                ))}
+
+                {!editingStaffSchedule && (
+                  <Button
+                    type="dashed"
+                    block
+                    onClick={() => {
+                      add();
+                    }}
+                    style={{ marginBottom: "12px" }}
+                  >
+                    + Thêm lịch trực khác
+                  </Button>
+                )}
+              </>
+            )}
+          </Form.List>
         </Form>
       </Modal>
     </WrapperContent>
