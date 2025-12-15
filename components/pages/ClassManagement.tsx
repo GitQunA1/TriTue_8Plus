@@ -65,6 +65,7 @@ const ClassManagement = () => {
   const [attendanceSessions, setAttendanceSessions] = useState<any[]>([]);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
   const [classSessionHistory, setClassSessionHistory] = useState<AttendanceSession[]>([]);
+  const [roomsMap, setRoomsMap] = useState<Record<string, any>>({});
   const [selectedMonth, setSelectedMonth] = useState<Dayjs>(dayjs());
   const [loadingSessions, setLoadingSessions] = useState(false);
 
@@ -142,6 +143,29 @@ const ClassManagement = () => {
     });
     return () => unsubscribe();
   }, [viewingClass?.id, viewingClass?.["Mã lớp"]]);
+
+  // Load rooms map to display room names instead of raw IDs
+  useEffect(() => {
+    const roomsRef = ref(database, "datasheet/Phòng_học");
+    const unsubscribe = onValue(
+      roomsRef,
+      (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          const map: Record<string, any> = Object.entries(data).reduce((acc: any, [id, v]: any) => {
+            acc[id] = v;
+            return acc;
+          }, {});
+          setRoomsMap(map);
+        } else {
+          setRoomsMap({});
+        }
+      },
+      { onlyOnce: false }
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   const handleViewDetail = (record: Class) => {
     setViewingClass(record);
@@ -450,8 +474,14 @@ const ClassManagement = () => {
       key: "room",
       width: 160,
       render: (room: string, record: Class) => {
-        // Hiển thị tên phòng học nếu có, nếu không thì hiển thị địa điểm cũ (fallback)
-        return room || record["Địa điểm"] || "-";
+        // Nếu trường "Phòng học" lưu ID phòng, hiển thị tên phòng từ roomsMap;
+        // nếu là chuỗi mô tả cũ thì hiển thị trực tiếp; nếu không có, fallback về "Địa điểm"
+        const roomId = room || record["Phòng học"] || "";
+        const roomObj = roomsMap && roomId ? roomsMap[roomId] : null;
+        if (roomObj && roomObj["Tên phòng"]) return roomObj["Tên phòng"];
+        // If the stored value is already a human-readable name, show it
+        if (room && typeof room === "string" && room.trim() !== "") return room;
+        return record["Địa điểm"] || "-";
       },
     },
     {
