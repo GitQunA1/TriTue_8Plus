@@ -66,7 +66,7 @@ interface TimetableEntry {
   "Thay thế thứ"?: number;
 }
 
-type ViewMode = "all" | "subject" | "location";
+type ViewMode = "subject" | "all" | "location";
 
 const HOURS = Array.from({ length: 17 }, (_, i) => i + 6);
 
@@ -78,7 +78,7 @@ const TeacherSchedule = () => {
   const [currentWeekStart, setCurrentWeekStart] = useState<Dayjs>(
     dayjs().startOf("isoWeek")
   );
-  const [viewMode, setViewMode] = useState<ViewMode>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>("subject");
   const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(new Set());
   const [selectedLocations, setSelectedLocations] = useState<Set<string>>(new Set());
   const [rooms, setRooms] = useState<Map<string, any>>(new Map());
@@ -187,17 +187,21 @@ const TeacherSchedule = () => {
     return roomId; // Fallback to ID if room not found
   };
 
+  // Teacher's classes (for subject mode)
   const myClasses = classes.filter((c) => {
     const match = c["Teacher ID"] === teacherId;
     return match && c["Trạng thái"] === "active";
   });
 
+  // All active classes (for all and location modes)
+  const allActiveClasses = classes.filter((c) => c["Trạng thái"] === "active");
+
   const subjects = Array.from(new Set(myClasses.map((c) => c["Môn học"]))).sort();
 
-  // Get unique rooms from "Phòng học"
+  // Get unique rooms from all active classes
   const locations = (() => {
     const roomSet = new Set<string>();
-    myClasses.forEach((c) => {
+    allActiveClasses.forEach((c) => {
       if (c["Phòng học"] && c["Phòng học"].trim() !== "") {
         roomSet.add(c["Phòng học"]);
       }
@@ -206,18 +210,23 @@ const TeacherSchedule = () => {
   })();
 
   const filteredClasses = (() => {
-    if (viewMode === "all") return myClasses;
-    
     if (viewMode === "subject") {
+      // Lịch phân môn: Show only teacher's classes, optionally filtered by subject
       return selectedSubjects.size === 0
         ? myClasses
         : myClasses.filter((c) => selectedSubjects.has(c["Môn học"]));
     }
     
+    if (viewMode === "all") {
+      // Lịch tổng hợp: Show all active classes (like admin)
+      return allActiveClasses;
+    }
+    
     if (viewMode === "location") {
+      // Lịch theo phòng: Show all active classes, optionally filtered by room
       return selectedLocations.size === 0
-        ? myClasses
-        : myClasses.filter((c) => 
+        ? allActiveClasses
+        : allActiveClasses.filter((c) => 
             c["Phòng học"] && selectedLocations.has(c["Phòng học"])
           );
     }
@@ -729,14 +738,14 @@ const TeacherSchedule = () => {
                   setSelectedLocations(new Set());
                 }}
                 options={[
-                  { value: "all", label: "📅 Lịch tổng hợp" },
                   { value: "subject", label: "📚 Lịch phân môn" },
-                  { value: "location", label: "📍 Lịch theo phòng học" },
+                  { value: "all", label: "📅 Lịch tổng hợp" },
+                  { value: "location", label: "📍 Lịch theo phòng" },
                 ]}
               />
             </div>
 
-            {/* Subject Filter */}
+            {/* Subject Filter - Only show in subject mode */}
             {viewMode === "subject" && subjects.length > 0 && (
               <>
                 <div style={{ marginBottom: "8px", paddingBottom: "8px", borderTop: "1px solid #f0f0f0", paddingTop: "8px" }}>
