@@ -67,6 +67,8 @@ const ClassGradeBook = () => {
   const [isStudentDetailModalOpen, setIsStudentDetailModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<any | null>(null);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [deletedColumns, setDeletedColumns] = useState<string[]>([]);
 
   const hasInvalidManualChars = (label: string) => /[.#$\[\]]/.test(label);
   const normalizeColumnLabel = (label: string) => (label ? label.replace(/\//g, "-") : label);
@@ -210,6 +212,7 @@ const ClassGradeBook = () => {
         // Merge manual scores with auto-populated scores
         const manualScores = data.scores.map((score: any) => normalizeScoreKeys(score));
         const manualColumns = data.columns.map((col: string) => normalizeColumnLabel(col));
+        const loadedDeletedColumns = data.deletedColumns || [];
         
         // Add manual columns that don't exist in test names
         manualColumns.forEach((col: string) => {
@@ -218,6 +221,11 @@ const ClassGradeBook = () => {
           }
         });
         
+        // Filter out deleted columns
+        const filteredColumnsArray = columnsArray.filter(
+          (col: string) => !loadedDeletedColumns.includes(col)
+        );
+        
         // Merge scores
         const mergedScores = scoresArray.map((autoScore: any) => {
           const manualScore = manualScores.find((s: any) => s.studentId === autoScore.studentId);
@@ -225,12 +233,14 @@ const ClassGradeBook = () => {
         });
         
         setCustomScores(mergedScores);
-        setCustomColumns(columnsArray);
+        setCustomColumns(filteredColumnsArray);
+        setDeletedColumns(loadedDeletedColumns);
         setHasUnsavedChanges(false);
       } else {
         // No manual scores, use auto-populated only
         setCustomScores(scoresArray);
         setCustomColumns(columnsArray);
+        setDeletedColumns([]);
         setHasUnsavedChanges(false);
       }
     });
@@ -249,6 +259,7 @@ const ClassGradeBook = () => {
       await set(scoresRef, {
         scores: normalizedScores,
         columns: normalizedColumns,
+        deletedColumns: deletedColumns,
         lastUpdated: new Date().toISOString(),
       });
       setHasUnsavedChanges(false);
@@ -289,7 +300,7 @@ const ClassGradeBook = () => {
     
     setCustomColumns(newColumns);
     setCustomScores(updatedScores);
-    saveCustomScores(updatedScores, newColumns);
+    setHasUnsavedChanges(true);
     setNewColumnName("");
     setIsAddColumnModalOpen(false);
   };
@@ -303,7 +314,8 @@ const ClassGradeBook = () => {
     });
     setCustomColumns(newColumns);
     setCustomScores(newScores);
-    saveCustomScores(newScores, newColumns);
+    setDeletedColumns([...deletedColumns, columnName]);
+    setHasUnsavedChanges(true);
   };
 
   // Update score
@@ -342,6 +354,7 @@ const ClassGradeBook = () => {
   // Handle save all scores
   const handleSaveAllScores = async () => {
     await saveCustomScores(customScores, customColumns);
+    setIsEditMode(false);
   };
 
   // Get grade data
@@ -695,7 +708,7 @@ const ClassGradeBook = () => {
         title: (
           <Space>
             <span>{column}</span>
-            {!isAutoColumn && (
+            {isEditMode && (
               <Popconfirm
                 title="Xóa cột điểm"
                 description={`Bạn có chắc chắn muốn xóa cột "${column}"?`}
@@ -719,11 +732,10 @@ const ClassGradeBook = () => {
         align: "center" as const,
         render: (_: any, record: any) => {
           const score = getCustomScore(record.studentId, column);
+          const scoreDetails = isAutoColumn ? getScoreDetailsFromColumn(record.studentId, column) : null;
           
-          // Auto columns are read-only
-          if (isAutoColumn) {
-            const scoreDetails = getScoreDetailsFromColumn(record.studentId, column);
-            
+          // When not in edit mode, just display the score (with popover for auto columns)
+          if (!isEditMode) {
             const scoreTag = score !== null ? (
               <Tag
                 color={
@@ -743,7 +755,7 @@ const ClassGradeBook = () => {
               <span style={{ color: "#ccc" }}>-</span>
             );
 
-            // Show popover with score details if available
+            // Show popover with score details if available (for auto columns)
             if (scoreDetails && scoreDetails["Chi tiết điểm"] && Array.isArray(scoreDetails["Chi tiết điểm"]) && scoreDetails["Chi tiết điểm"].length > 0) {
               return (
                 <Popover
@@ -778,7 +790,7 @@ const ClassGradeBook = () => {
             return scoreTag;
           }
           
-          // Manual columns are always editable
+          // In edit mode, all columns are editable
           const isEditing =
             editingCell?.studentId === record.studentId &&
             editingCell?.column === column;
@@ -931,39 +943,13 @@ const ClassGradeBook = () => {
       </Card>
 
       <Card>
-        <div
-          style={{
-            marginBottom: 16,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
-          <div>
-            <div style={{ color: "#666", marginBottom: 4 }}>
-              Bảng điểm tự động lấy từ lịch sử lớp học (cột có tag "Từ lịch sử") và điểm tự nhập.
-            </div>
-            <div style={{ color: "#999", fontSize: 12 }}>
-              💡 Cột từ lịch sử: chỉ xem | Cột thủ công: nhấn vào ô để nhập điểm. Kéo ngang bảng để xem thêm cột.
-            </div>
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ color: "#666", marginBottom: 4 }}>
+            Bảng điểm tự động lấy từ lịch sử lớp học (cột từ lịch sử) và điểm tự nhập.
           </div>
-          <Space>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => setIsAddColumnModalOpen(true)}
-            >
-              Thêm cột điểm
-            </Button>
-            <Button
-              type="primary"
-              icon={<SaveOutlined />}
-              onClick={handleSaveAllScores}
-              disabled={!hasUnsavedChanges}
-            >
-              Lưu điểm
-            </Button>
-          </Space>
+          <div style={{ color: "#999", fontSize: 12 }}>
+            💡 Cột từ lịch sử: chỉ xem | Cột thủ công: bấm "Chỉnh sửa điểm" để thêm/sửa/xóa. Kéo ngang bảng để xem thêm cột.
+          </div>
         </div>
         <Table
           columns={customScoresColumns}
@@ -977,6 +963,40 @@ const ClassGradeBook = () => {
             emptyText: <Empty description="Không có dữ liệu" />,
           }}
         />
+        <div
+          style={{
+            marginTop: 16,
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: 8,
+          }}
+        >
+          {isEditMode ? (
+            <>
+              <Button
+                icon={<PlusOutlined />}
+                onClick={() => setIsAddColumnModalOpen(true)}
+              >
+                Thêm cột điểm
+              </Button>
+              <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                onClick={handleSaveAllScores}
+                disabled={!hasUnsavedChanges}
+              >
+                Lưu điểm
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="primary"
+              onClick={() => setIsEditMode(true)}
+            >
+              Chỉnh sửa điểm
+            </Button>
+          )}
+        </div>
       </Card>
 
       {/* Add Column Modal */}
