@@ -24,9 +24,10 @@ import {
   PlusOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  SaveOutlined,
 } from "@ant-design/icons";
 import { useParams, useNavigate } from "react-router-dom";
-import { ref, onValue, update } from "firebase/database";
+import { ref, onValue, set } from "firebase/database";
 import { database } from "../../firebase";
 import WrapperContent from "@/components/WrapperContent";
 import { subjectMap } from "@/utils/selectOptions";
@@ -65,6 +66,20 @@ const ClassGradeBook = () => {
   const [filterType, setFilterType] = useState<"all" | "dateRange" | "month">("all");
   const [isStudentDetailModalOpen, setIsStudentDetailModalOpen] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<any | null>(null);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  const hasInvalidManualChars = (label: string) => /[.#$\[\]]/.test(label);
+  const normalizeColumnLabel = (label: string) => (label ? label.replace(/\//g, "-") : label);
+  const normalizeScoreKeys = (entry: any) => {
+    if (!entry) return entry;
+    const normalized: Record<string, any> = { studentId: entry.studentId };
+    Object.keys(entry).forEach((key) => {
+      if (key === "studentId") return;
+      const normalizedKey = normalizeColumnLabel(key);
+      normalized[normalizedKey] = entry[key];
+    });
+    return normalized;
+  };
 
   // Load class data
   useEffect(() => {
@@ -152,18 +167,19 @@ const ClassGradeBook = () => {
         
         if (score != null && !isNaN(score)) {
           // Create column key with date and optional test name
-          const formattedDate = dayjs(sessionDate).format("DD/MM/YYYY");
+          const formattedDate = dayjs(sessionDate).format("DD-MM-YYYY");
           const testName = record["Bài kiểm tra"] || "";
           const columnKey = testName 
             ? `${testName} (${formattedDate})`
             : `Điểm (${formattedDate})`;
+          const normalizedColumnKey = normalizeColumnLabel(columnKey);
           
-          testColumns.add(columnKey);
+          testColumns.add(normalizedColumnKey);
           
-          if (!testScoresMap.has(columnKey)) {
-            testScoresMap.set(columnKey, new Map());
+          if (!testScoresMap.has(normalizedColumnKey)) {
+            testScoresMap.set(normalizedColumnKey, new Map());
           }
-          testScoresMap.get(columnKey)!.set(studentId, score);
+          testScoresMap.get(normalizedColumnKey)!.set(studentId, score);
         }
       });
     });
@@ -181,8 +197,9 @@ const ClassGradeBook = () => {
       return scoreObj;
     });
     
-    const columnsArray = Array.from(testColumns);
-    setAutoColumns(columnsArray); // Track auto columns
+    const autoColumnsArray = Array.from(testColumns);
+    setAutoColumns(autoColumnsArray); // Track auto columns
+    const columnsArray = [...autoColumnsArray];
     
     // Load manual scores from Firebase and merge
     const scoresRef = ref(database, `datasheet/Điểm_tự_nhập/${classId}`);
@@ -191,8 +208,8 @@ const ClassGradeBook = () => {
       
       if (data && data.scores && data.columns) {
         // Merge manual scores with auto-populated scores
-        const manualScores = data.scores;
-        const manualColumns = data.columns;
+        const manualScores = data.scores.map((score: any) => normalizeScoreKeys(score));
+        const manualColumns = data.columns.map((col: string) => normalizeColumnLabel(col));
         
         // Add manual columns that don't exist in test names
         manualColumns.forEach((col: string) => {
@@ -209,10 +226,12 @@ const ClassGradeBook = () => {
         
         setCustomScores(mergedScores);
         setCustomColumns(columnsArray);
+        setHasUnsavedChanges(false);
       } else {
         // No manual scores, use auto-populated only
         setCustomScores(scoresArray);
         setCustomColumns(columnsArray);
+        setHasUnsavedChanges(false);
       }
     });
     
@@ -224,12 +243,16 @@ const ClassGradeBook = () => {
     if (!classId) return;
     try {
       const scoresRef = ref(database, `datasheet/Điểm_tự_nhập/${classId}`);
-      await update(scoresRef, {
-        scores,
-        columns,
+      // Sử dụng set() thay vì update() để ghi đè toàn bộ dữ liệu
+      const normalizedScores = scores.map((score) => normalizeScoreKeys(score));
+      const normalizedColumns = columns.map((col) => normalizeColumnLabel(col));
+      await set(scoresRef, {
+        scores: normalizedScores,
+        columns: normalizedColumns,
         lastUpdated: new Date().toISOString(),
       });
-      message.success("Đã lưu điểm");
+      setHasUnsavedChanges(false);
+      message.success("Đã lưu điểm thành công");
     } catch (error) {
       console.error("Error saving custom scores:", error);
       message.error("Lỗi khi lưu điểm");
@@ -238,17 +261,35 @@ const ClassGradeBook = () => {
 
   // Add new column
   const handleAddColumn = () => {
-    if (!newColumnName.trim()) {
+    const trimmedName = newColumnName.trim();
+    if (!trimmedName) {
       message.warning("Vui lòng nhập tên cột");
       return;
     }
-    if (customColumns.includes(newColumnName.trim())) {
+    if (hasInvalidManualChars(trimmedName)) {
+      message.error("Tên cột không được chứa các ký tự . # $ [ ]");
+      return;
+    }
+
+    const normalizedName = normalizeColumnLabel(trimmedName);
+
+    if (customColumns.includes(normalizedName)) {
       message.warning("Tên cột đã tồn tại");
       return;
     }
-    const newColumns = [...customColumns, newColumnName.trim()];
+    
+    const newColumns = [...customColumns, normalizedName];
+    
+    // Đảm bảo tất cả học sinh đều có entry trong customScores
+    const studentIds = classData?.["Student IDs"] || [];
+    const updatedScores = studentIds.map((studentId: string) => {
+      const existingScore = customScores.find((s: any) => s.studentId === studentId);
+      return existingScore || { studentId };
+    });
+    
     setCustomColumns(newColumns);
-    saveCustomScores(customScores, newColumns);
+    setCustomScores(updatedScores);
+    saveCustomScores(updatedScores, newColumns);
     setNewColumnName("");
     setIsAddColumnModalOpen(false);
   };
@@ -287,7 +328,7 @@ const ClassGradeBook = () => {
     }
 
     setCustomScores(newScores);
-    saveCustomScores(newScores, customColumns);
+    setHasUnsavedChanges(true);
     setEditingCell(null);
     setTempValue(null);
   };
@@ -296,6 +337,11 @@ const ClassGradeBook = () => {
   const getCustomScore = (studentId: string, column: string) => {
     const score = customScores.find((s) => s.studentId === studentId);
     return score?.[column] ?? null;
+  };
+
+  // Handle save all scores
+  const handleSaveAllScores = async () => {
+    await saveCustomScores(customScores, customColumns);
   };
 
   // Get grade data
@@ -336,12 +382,12 @@ const ClassGradeBook = () => {
     }
     
     return customColumns.filter((column) => {
-      // Extract date from column name: "Tên bài (DD/MM/YYYY)" or "Điểm (DD/MM/YYYY)"
-      const match = column.match(/\((\d{2}\/\d{2}\/\d{4})\)$/);
+            // Extract date from column name: "Tên bài (DD-MM-YYYY)" or "Điểm (DD/MM/YYYY)"
+            const match = column.match(/\((\d{2}[\/-]\d{2}[\/-]\d{4})\)$/);
       if (!match) return true; // Keep columns without date format
       
-      const dateStr = match[1];
-      const [day, month, year] = dateStr.split('/');
+            const normalizedDate = match[1].replace(/\//g, "-");
+            const [day, month, year] = normalizedDate.split('-');
       const columnDate = dayjs(`${year}-${month}-${day}`);
       
       if (filterType === "dateRange" && dateRangeFilter[0] && dateRangeFilter[1]) {
@@ -424,15 +470,15 @@ const ClassGradeBook = () => {
 
   // Get score details from column name (for custom scores from session history)
   const getScoreDetailsFromColumn = (studentId: string, columnName: string) => {
-    // Column format: "Tên bài kiểm tra (DD/MM/YYYY)"
+    // Column format: "Tên bài kiểm tra (DD-MM-YYYY)"
     // Extract test name and date
-    const match = columnName.match(/^(.+?)\s*\((\d{2}\/\d{2}\/\d{4})\)$/);
+    const match = columnName.match(/^(.+?)\s*\((\d{2}[\/-]\d{2}[\/-]\d{4})\)$/);
     if (!match) return null;
 
     const testName = match[1].trim();
-    const dateStr = match[2];
-    // Convert DD/MM/YYYY to YYYY-MM-DD
-    const [day, month, year] = dateStr.split('/');
+    const normalizedDate = match[2].replace(/\//g, "-");
+    // Convert DD-MM-YYYY to YYYY-MM-DD
+    const [day, month, year] = normalizedDate.split('-');
     const sessionDate = `${year}-${month}-${day}`;
 
     // Find session with matching date and test name
@@ -614,7 +660,6 @@ const ClassGradeBook = () => {
       key: "index",
       width: 60,
       align: "center" as const,
-      fixed: "left" as const,
       render: (_: any, __: any, index: number) => index + 1,
     },
     {
@@ -622,14 +667,12 @@ const ClassGradeBook = () => {
       dataIndex: "studentCode",
       key: "studentCode",
       width: 100,
-      fixed: "left" as const,
     },
     {
       title: "Họ và tên",
       dataIndex: "studentName",
       key: "studentName",
       width: 180,
-      fixed: "left" as const,
       render: (text: string, record: any) => {
         const displayName = text || record.studentName || "-";
         return (
@@ -735,7 +778,7 @@ const ClassGradeBook = () => {
             return scoreTag;
           }
           
-          // Manual columns are editable
+          // Manual columns are always editable
           const isEditing =
             editingCell?.studentId === record.studentId &&
             editingCell?.column === column;
@@ -795,7 +838,6 @@ const ClassGradeBook = () => {
       key: "average",
       width: 120,
       align: "center" as const,
-      fixed: "right" as const,
       render: (_: any, record: any) => {
         const avg = getCustomAverage(record.studentId);
         if (avg === null) return <span style={{ color: "#ccc" }}>-</span>;
@@ -814,7 +856,6 @@ const ClassGradeBook = () => {
       title: "Ghi chú",
       key: "note",
       width: 200,
-      fixed: "right" as const,
     },
   ];
 
@@ -903,23 +944,33 @@ const ClassGradeBook = () => {
               Bảng điểm tự động lấy từ lịch sử lớp học (cột có tag "Từ lịch sử") và điểm tự nhập.
             </div>
             <div style={{ color: "#999", fontSize: 12 }}>
-              💡 Cột từ lịch sử: chỉ xem | Cột thủ công: nhấn vào ô để nhập điểm
+              💡 Cột từ lịch sử: chỉ xem | Cột thủ công: nhấn vào ô để nhập điểm. Kéo ngang bảng để xem thêm cột.
             </div>
           </div>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => setIsAddColumnModalOpen(true)}
-          >
-            Thêm cột điểm
-          </Button>
+          <Space>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => setIsAddColumnModalOpen(true)}
+            >
+              Thêm cột điểm
+            </Button>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              onClick={handleSaveAllScores}
+              disabled={!hasUnsavedChanges}
+            >
+              Lưu điểm
+            </Button>
+          </Space>
         </div>
         <Table
           columns={customScoresColumns}
           dataSource={gradeData}
           rowKey="studentId"
           pagination={false}
-          scroll={{ x: Math.max(1200, filteredColumns.length * 120 + 400), y: 500 }}
+          scroll={{ x: "max-content", y: 500 }}
           size="small"
           bordered
           locale={{
@@ -950,6 +1001,9 @@ const ClassGradeBook = () => {
           onPressEnter={handleAddColumn}
           autoFocus
         />
+        <div style={{ marginTop: 8, color: "#999", fontSize: 12 }}>
+          Không dùng các ký tự / . # $ [ ] để tránh lỗi lưu Firebase.
+        </div>
       </Modal>
 
       {/* Student Detail Modal */}
