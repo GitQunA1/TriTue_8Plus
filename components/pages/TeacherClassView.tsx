@@ -377,14 +377,6 @@ const TeacherClassView = () => {
                 extra={
                   <Space>
                     <Button
-                      icon={<FileTextOutlined />}
-                      onClick={() =>
-                        navigate(`/workspace/classes/${classData.id}/grades`)
-                      }
-                    >
-                      Xem bảng điểm lớp
-                    </Button>
-                    <Button
                       type="primary"
                       icon={<UserAddOutlined />}
                       onClick={() => {
