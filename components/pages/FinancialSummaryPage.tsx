@@ -80,6 +80,9 @@ const FinancialSummaryPage = () => {
     Record<string, any>
   >({});
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [attendanceSessions, setAttendanceSessions] = useState<any[]>([]);
+  const [teachers, setTeachers] = useState<any[]>([]);
+  const [classes, setClasses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isExpenseModalVisible, setIsExpenseModalVisible] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
@@ -137,6 +140,120 @@ const FinancialSummaryPage = () => {
 
     return () => unsubscribe();
   }, []);
+
+  // Load attendance sessions from Firebase
+  useEffect(() => {
+    const sessionsRef = ref(database, "datasheet/Điểm_danh_sessions");
+    const unsubscribe = onValue(sessionsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const sessionsList = Object.keys(data).map((key) => ({
+          id: key,
+          ...data[key],
+        }));
+        setAttendanceSessions(sessionsList);
+      } else {
+        setAttendanceSessions([]);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Load teachers from Firebase
+  useEffect(() => {
+    const teachersRef = ref(database, "datasheet/Giáo_viên");
+    const unsubscribe = onValue(teachersRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const teachersList = Object.keys(data).map((key) => ({
+          id: key,
+          ...data[key],
+        }));
+        setTeachers(teachersList);
+      } else {
+        setTeachers([]);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Load classes from Firebase
+  useEffect(() => {
+    const classesRef = ref(database, "datasheet/Lớp_học");
+    const unsubscribe = onValue(classesRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const classesList = Object.keys(data).map((key) => ({
+          id: key,
+          ...data[key],
+        }));
+        setClasses(classesList);
+      } else {
+        setClasses([]);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // Helper to parse salary/tuition values
+  const parseSalaryValue = (value: any): number => {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : 0;
+    }
+    const numeric = String(value).replace(/[^\d.-]/g, "");
+    return numeric ? Number(numeric) : 0;
+  };
+
+  // Calculate total teacher salaries from attendance sessions
+  const totalTeacherSalaries = useMemo(() => {
+    console.log("💰 Calculating teacher salaries for:", { selectedMonth, selectedYear, viewMode });
+    
+    // Filter completed sessions for the selected period
+    const filteredSessions = attendanceSessions.filter((session) => {
+      const status = session["Trạng thái"];
+      const isCompleted = status === "completed" || status === "completed_session" || !status;
+      
+      if (!isCompleted || !session["Ngày"]) return false;
+      
+      const sessionDate = new Date(session["Ngày"]);
+      const sessionMonth = sessionDate.getMonth();
+      const sessionYear = sessionDate.getFullYear();
+      
+      if (viewMode === "year") {
+        return sessionYear === selectedYear;
+      } else {
+        return sessionMonth === selectedMonth && sessionYear === selectedYear;
+      }
+    });
+    
+    console.log("📊 Filtered sessions:", filteredSessions.length);
+    
+    // Calculate salary for each session
+    let totalSalary = 0;
+    filteredSessions.forEach((session) => {
+      const classId = session["Class ID"];
+      const classData = classes.find(c => c.id === classId);
+      const teacherId = session["Teacher ID"];
+      const teacher = teachers.find(t => t.id === teacherId);
+      
+      // Priority: Học phí mỗi buổi > Lương GV > Lương theo buổi
+      const sessionSalary = parseSalaryValue(
+        classData?.["Học phí mỗi buổi"] ??
+        classData?.["Lương GV"] ??
+        session["Lương GV"] ??
+        teacher?.["Lương theo buổi"]
+      );
+      
+      totalSalary += sessionSalary;
+    });
+    
+    console.log("✅ Total teacher salaries:", totalSalary, "from", filteredSessions.length, "sessions");
+    return totalSalary;
+  }, [attendanceSessions, teachers, classes, selectedMonth, selectedYear, viewMode]);
 
   // Calculate total revenue (paid invoices only)
   const totalRevenue = useMemo(() => {
@@ -197,20 +314,27 @@ const FinancialSummaryPage = () => {
     return total;
   }, [studentInvoices, selectedMonth, selectedYear, viewMode]);
 
-  // Calculate total expenses
+  // Calculate total expenses (manual expenses + teacher salaries)
   const totalExpenses = useMemo(() => {
+    let manualExpenses = 0;
     if (viewMode === "year") {
-      return expenses
+      manualExpenses = expenses
         .filter((expense) => expense.year === selectedYear)
         .reduce((sum, expense) => sum + expense.amount, 0);
+    } else {
+      manualExpenses = expenses
+        .filter(
+          (expense) =>
+            expense.month === selectedMonth && expense.year === selectedYear
+        )
+        .reduce((sum, expense) => sum + expense.amount, 0);
     }
-    return expenses
-      .filter(
-        (expense) =>
-          expense.month === selectedMonth && expense.year === selectedYear
-      )
-      .reduce((sum, expense) => sum + expense.amount, 0);
-  }, [expenses, selectedMonth, selectedYear, viewMode]);
+    
+    // Add teacher salaries to total expenses
+    const total = manualExpenses + totalTeacherSalaries;
+    console.log("📊 Total expenses:", { manualExpenses, totalTeacherSalaries, total });
+    return total;
+  }, [expenses, totalTeacherSalaries, selectedMonth, selectedYear, viewMode]);
 
   // Net profit/loss
   const netProfit = totalRevenue - totalExpenses;
@@ -226,7 +350,7 @@ const FinancialSummaryPage = () => {
     );
   }, [expenses, selectedMonth, selectedYear, viewMode]);
 
-  // Group expenses by category
+  // Group expenses by category (including teacher salaries)
   const expensesByCategory = useMemo(() => {
     const grouped: Record<string, number> = {};
     filteredExpenses.forEach((expense) => {
@@ -235,11 +359,17 @@ const FinancialSummaryPage = () => {
       }
       grouped[expense.category] += expense.amount;
     });
+    
+    // Add teacher salaries as a separate category
+    if (totalTeacherSalaries > 0) {
+      grouped["Lương giáo viên (Từ điểm danh)"] = totalTeacherSalaries;
+    }
+    
     return Object.entries(grouped).map(([category, amount]) => ({
       category,
       amount,
     }));
-  }, [filteredExpenses]);
+  }, [filteredExpenses, totalTeacherSalaries]);
 
   // Convert file to base64
   const getBase64 = (file: File): Promise<string> => {
