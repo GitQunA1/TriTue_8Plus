@@ -1661,8 +1661,7 @@ const AttendanceSessionPage = () => {
         const attendanceRecord = attendanceRecords.find(
           (r) => r["Student ID"] === record.id
         );
-        if (!attendanceRecord?.["Có mặt"]) return "-";
-
+        // Allow input even for absent students
         return (
           <InputNumber
             min={0}
@@ -1693,8 +1692,7 @@ const AttendanceSessionPage = () => {
         const attendanceRecord = attendanceRecords.find(
           (r) => r["Student ID"] === record.id
         );
-        if (!attendanceRecord?.["Có mặt"]) return "-";
-
+        // Allow input even for absent students
         return (
           <InputNumber
             min={0}
