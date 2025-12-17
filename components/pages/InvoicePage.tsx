@@ -1477,101 +1477,105 @@ const InvoicePage = () => {
     const currentMonthHtml =
       currentMonthRows.length > 0
         ? `
-      <div style="margin:10px;">
-        <strong>Chi tiết tháng ${invoice.month + 1}:</strong>
-        <table style="width:100%; border-collapse: collapse; margin-top:8px; font-size:13px;">
+      <div style="margin:10px 0;">
+        <strong style="color:#1a3353; font-size:15px;">Chi tiết tháng ${invoice.month + 1}:</strong>
+        <table style="width:100%; border-collapse: collapse; margin-top:8px; font-size:14px; border:1px solid #d9d9d9;">
           <thead>
-            <tr>
-              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #eee;">Môn học</th>
-              <th style="text-align:left; padding:6px 8px; border-bottom:1px solid #eee;">Lớp</th>
-              <th style="text-align:center; padding:6px 8px; border-bottom:1px solid #eee;">Số buổi</th>
-              <th style="text-align:right; padding:6px 8px; border-bottom:1px solid #eee;">Giá/buổi</th>
-              <th style="text-align:right; padding:6px 8px; border-bottom:1px solid #eee;">Tổng</th>
+            <tr style="background:#1a3353; color:#ffffff;">
+              <th style="text-align:left; padding:10px 12px; border:1px solid #d9d9d9; font-weight:600;">Môn học</th>
+              <th style="text-align:left; padding:10px 12px; border:1px solid #d9d9d9; font-weight:600;">Lớp</th>
+              <th style="text-align:center; padding:10px 12px; border:1px solid #d9d9d9; font-weight:600;">Số buổi</th>
+              <th style="text-align:right; padding:10px 12px; border:1px solid #d9d9d9; font-weight:600;">Giá/buổi</th>
+              <th style="text-align:right; padding:10px 12px; border:1px solid #d9d9d9; font-weight:600;">Thành tiền</th>
             </tr>
           </thead>
           <tbody>
             ${currentMonthRows
               .map(
-                (r) => `
-              <tr>
-                <td style="padding:6px 8px;">${subjectMap[r.subject] || r.subject}</td>
-                <td style="padding:6px 8px;">${r.className}</td>
-                <td style="padding:6px 8px; text-align:center;">${r.sessions}</td>
-                <td style="padding:6px 8px; text-align:right;">${r.pricePerSession.toLocaleString("vi-VN")} đ</td>
-                <td style="padding:6px 8px; text-align:right; color:#1890ff;">${r.totalPrice.toLocaleString("vi-VN")} đ</td>
+                (r, idx) => `
+              <tr style="background:${idx % 2 === 0 ? '#f0f5ff' : '#ffffff'};">
+                <td style="padding:10px 12px; border:1px solid #e8e8e8;">${subjectMap[r.subject] || r.subject}</td>
+                <td style="padding:10px 12px; border:1px solid #e8e8e8;">${r.className}</td>
+                <td style="padding:10px 12px; text-align:center; border:1px solid #e8e8e8; font-weight:600;">${r.sessions}</td>
+                <td style="padding:10px 12px; text-align:right; border:1px solid #e8e8e8;">${r.pricePerSession.toLocaleString("vi-VN")}</td>
+                <td style="padding:10px 12px; text-align:right; border:1px solid #e8e8e8; font-weight:600; color:#1890ff;">${r.totalPrice.toLocaleString("vi-VN")}</td>
               </tr>`
               )
               .join("")}
-            <tr style="font-weight:700; background:#fff2f0; color:#c40000;">
-              <td style="padding:10px; font-size:15px;" colSpan="4">Tổng tháng ${invoice.month + 1}</td>
-              <td style="padding:10px; text-align:right; font-size:15px;">${currentMonthTotal.toLocaleString("vi-VN")} đ</td>
-            </tr>
-            ${
-              discountAmount > 0
-                ? `
-            <tr style="font-weight:600; color:#c40000;">
-              <td style="padding:10px;" colSpan="4">Miễn giảm</td>
-              <td style="padding:10px; text-align:right;">- ${discountAmount.toLocaleString("vi-VN")} đ</td>
-            </tr>
-            <tr style="font-weight:700; background:#e6f7ff; color:#0050b3;">
-              <td style="padding:10px; font-size:15px;" colSpan="4">Sau miễn giảm</td>
-              <td style="padding:10px; text-align:right; font-size:15px;">${netCurrentMonth.toLocaleString("vi-VN")} đ</td>
-            </tr>`
-                : ""
-            }
           </tbody>
         </table>
+        ${
+          discountAmount > 0
+            ? `
+        <div style="margin-top:8px; padding:8px 12px; background:#bae7ff; border-radius:4px; border:1px solid #69c0ff;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="color:#003a8c; font-size:13px; font-weight:600;">Miễn giảm</span>
+            <span style="color:#003a8c; font-size:14px; font-weight:700;">- ${discountAmount.toLocaleString("vi-VN")} đ</span>
+          </div>
+        </div>`
+            : ""
+        }
       </div>`
         : `<p style="margin:6px 0;"><strong>Chi tiết tháng ${invoice.month + 1}:</strong> Không có buổi học</p>`;
 
     const combinedTotalDue = totalDebt + netCurrentMonth;
 
     return `
-      <div style="font-family: 'Times New Roman', serif; padding: 40px 20px 20px 20px; margin: 40px 1px 1px 1px; position: relative;">
+      <div style="font-family: 'Times New Roman', serif; padding: 20px 30px; margin: 20px auto; max-width: 700px; position: relative; background: #ffffff;">
         <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0; display: flex; align-items: center; justify-content: center; pointer-events: none;">
           <img
             src="/img/logo.png"
             alt="Background Logo"
-            style="width: auto; height: 520px; max-width: 520px; object-fit: contain; opacity: 0.18; filter: grayscale(50%); user-select: none; pointer-events: none;"
+            style="width: auto; height: 400px; max-width: 400px; object-fit: contain; opacity: 0.08; filter: grayscale(70%); user-select: none; pointer-events: none;"
           />
         </div>
         <div style="position: relative; z-index: 1;">
-          <h1 style="color: #c40000; text-align: center; margin: 6px 0 18px; font-size: 22px;">PHIẾU THU HỌC PHÍ THÁNG ${invoice.month + 1}</h1>
-
-          <div style="display: flex; gap: 24px; align-items: flex-start;">
-            <div style="flex: 1; padding-right: 10px;">
-              <p style="color: #c40000; font-weight: 700; font-size: 16px; margin: 6px 0;">Họ và tên: ${invoice.studentName} &nbsp;&nbsp;&nbsp; <span style="color: #333; font-weight: 500;">Khối: ${grade}</span></p>
-
-              ${currentMonthHtml}
-              ${debtDetailsHtml}
-              <div style="margin:16px 0; padding:10px 14px; border:2px solid #c40000; border-radius:8px;">
-                <p style="margin:0; color:#c40000; font-size:15px; font-weight:700; text-align:center;">TỔNG PHẢI THU THÁNG ${invoice.month + 1}</p>
-                <p style="margin:4px 0 0 0; color:#c40000; font-size:22px; font-weight:700; text-align:center;">${combinedTotalDue.toLocaleString("vi-VN")} đ</p>
-              </div>
-              ${totalDebt > 0 ? `<p style="margin-top: 12px; color: #ff4d4f;"><strong>Nợ các tháng trước:</strong> ${totalDebt.toLocaleString("vi-VN")} đ</p>` : ""}
-              <p style="margin-top: 12px;"><strong>Ghi chú:</strong> ${(invoice as any).note || ""}</p>
-
-              <div style="margin-top: 18px; font-size: 13px; color: #222; line-height: 1.4;">
-                <strong>Phụ huynh vui lòng đóng học phí qua:</strong><br/>
-                STK: 4319888<br/>
-                Hoặc đóng tiền mặt (ghi rõ Tháng ${invoice.month + 1} và họ tên học sinh)
-              </div>
+          <div style="text-align: center; margin-bottom: 16px;">
+            <div style="display: inline-flex; align-items: center; gap: 12px; background: #1a3353; padding: 8px 24px; border-radius: 6px;">
+              <img src="/img/logo.png" alt="Logo" style="width: 36px; height: 36px;" />
+              <span style="color: #ffffff; font-size: 15px; font-weight: 600; letter-spacing: 1px;">TRUNG TÂM HỌC TẬP</span>
             </div>
+          </div>
+          <h1 style="color: #d4a33e; text-align: center; margin: 8px 0 16px; font-size: 24px; font-weight: 900; text-transform: uppercase; letter-spacing: 1px;">PHIẾU THU HỌC PHÍ THÁNG ${invoice.month + 1}</h1>
 
-            <div style="width: 260px; text-align: center; border-left: 1px solid #f0f0f0; padding-left: 20px;">
-              <p style="margin: 0 0 6px 0; font-size: 12px; color: #666;">Quét mã để chuyển tiền đến</p>
-              <p style="margin: 0 0 12px 0; font-weight: 700;">NGUYEN THI HOA<br/>4319888</p>
-              <div style="display: flex; align-items: center; justify-content: center;">
-                <img
-                  src="${generateVietQR(combinedTotalDue.toString(), invoice.studentName, (invoice.month + 1).toString())}"
-                  alt="VietQR"
-                  style="width: 180px; height: 180px; border: 1px solid #eee; padding: 8px; border-radius: 6px; background: #fff;"
-                />
+          <div style="background: #f5f5f5; padding: 12px 16px; border-radius: 6px; margin-bottom: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <p style="margin: 0; color: #1a3353; font-weight: 700; font-size: 15px;">Họ và tên: <span style="color: #000;">${invoice.studentName}</span></p>
+              </div>
+              <div>
+                <p style="margin: 0; color: #1a3353; font-weight: 600; font-size: 14px;">Khối lớp: <span style="color: #000;">${grade}</span></p>
               </div>
             </div>
           </div>
 
-          <p style="text-align: center; color: #999; font-size: 12px; margin-top: 18px;">Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}</p>
+          ${currentMonthHtml}
+          ${debtDetailsHtml}
+          
+          <div style="display: flex; gap: 16px; align-items: center; margin: 16px 0; margin-top: 18px;">
+            <div style="flex: 1; background: #1a3353; padding: 16px 14px; border-radius: 8px; display: flex; flex-direction: column; justify-content: center; align-items: center;">
+              <p style="margin: 0 0 8px 0; color: #ffffff; font-size: 13px; font-weight: 600; text-align: center;">TỔNG TIỀN:</p>
+              <p style="margin: 0; color: #d4a33e; font-size: 26px; font-weight: 900; text-align: center; text-shadow: 1px 1px 2px rgba(0,0,0,0.3); line-height: 1.2;">${combinedTotalDue.toLocaleString("vi-VN")} đ</p>
+            </div>
+            
+            <div style="flex: 1; text-align: center; background: #f9f9f9; padding: 16px; border-radius: 8px; border: 2px solid #e0e0e0; display: flex; flex-direction: column; justify-content: center; align-items: center;">
+              <p style="margin: 0 0 8px 0; font-size: 12px; color: #666; font-weight: 600;">Quét mã để thanh toán</p>
+              <img
+                src="${generateVietQR(combinedTotalDue.toString(), invoice.studentName, (invoice.month + 1).toString())}"
+                alt="VietQR"
+                style="width: 170px; height: 170px; border: 1px solid #ddd; padding: 6px; border-radius: 4px; background: #fff;"
+              />
+            </div>
+          </div>
+
+          ${totalDebt > 0 ? `<p style="margin: 10px 0; padding: 8px 12px; background: #fff2e8; border-left: 4px solid #ff4d4f; color: #ff4d4f; font-size: 13px;"><strong>⚠️ Nợ các tháng trước:</strong> ${totalDebt.toLocaleString("vi-VN")} đ</p>` : ""}
+          
+          <div style="margin-top: 14px; padding: 10px 14px; background: #f0f9ff; border-radius: 6px; font-size: 12px; color: #003a8c; line-height: 1.5;">
+            <strong>Chi chú:</strong> Vui lòng ghi rõ nội dung chuyển khoản: [Tên Học Sinh] - [Tháng ${invoice.month + 1}]<br/>
+            <strong>Số tài khoản:</strong> 4319888 - NGUYEN THI HOA
+          </div>
+
+          <p style="text-align: center; color: #999; font-size: 11px; margin-top: 14px;">Ngày xuất: ${new Date().toLocaleDateString("vi-VN")}</p>
         </div>
       </div>
     `;
