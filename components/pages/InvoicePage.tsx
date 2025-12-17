@@ -1215,18 +1215,24 @@ const InvoicePage = () => {
       }
     > = {};
 
-    // Calculate average price per session
-    const avgPricePerSession =
-      invoice.totalSessions > 0
-        ? invoice.totalAmount / invoice.totalSessions
-        : 0;
-
+    // Process each session and group by subject, preserving actual price per subject
     invoice.sessions.forEach((session) => {
       const className = session["Tên lớp"] || "";
       const classCode = session["Mã lớp"] || "";
       const classId = session["Class ID"];
       const classInfo = classes.find((c) => c.id === classId);
       const subject = classInfo?.["Môn học"] || "N/A";
+
+      // Get the actual price for this session (prefer course/class price, fall back to stored invoice price/average)
+      let pricePerSession = getSessionPrice(session);
+      if (!pricePerSession) {
+        pricePerSession =
+          Number(session["Giá/buổi"]) ||
+          invoice.pricePerSession ||
+          (invoice.totalSessions > 0
+            ? invoice.totalAmount / invoice.totalSessions
+            : 0);
+      }
 
       const key = `${classCode}-${className}-${subject}`;
 
@@ -1236,9 +1242,11 @@ const InvoicePage = () => {
           classCode,
           subject,
           sessionCount: 0,
-          pricePerSession: avgPricePerSession,
+          pricePerSession: pricePerSession,
           totalPrice: 0,
         };
+      } else if (!classSummary[key].pricePerSession && pricePerSession) {
+        classSummary[key].pricePerSession = pricePerSession;
       }
 
       classSummary[key].sessionCount++;
@@ -1405,8 +1413,11 @@ const InvoicePage = () => {
 
     const currentMonthTotal =
       currentMonthRows.reduce((s, r) => s + (r.totalPrice || 0), 0) ||
-      invoice.finalAmount ||
+      invoice.totalAmount ||
       0;
+
+    const discountAmount = invoice.discount || 0;
+    const netCurrentMonth = Math.max(0, currentMonthTotal - discountAmount);
 
     const currentMonthHtml =
       currentMonthRows.length > 0
@@ -1440,12 +1451,25 @@ const InvoicePage = () => {
               <td style="padding:10px; font-size:15px;" colSpan="4">Tổng tháng ${invoice.month + 1}</td>
               <td style="padding:10px; text-align:right; font-size:15px;">${currentMonthTotal.toLocaleString("vi-VN")} đ</td>
             </tr>
+            ${
+              discountAmount > 0
+                ? `
+            <tr style="font-weight:600; color:#c40000;">
+              <td style="padding:10px;" colSpan="4">Miễn giảm</td>
+              <td style="padding:10px; text-align:right;">- ${discountAmount.toLocaleString("vi-VN")} đ</td>
+            </tr>
+            <tr style="font-weight:700; background:#e6f7ff; color:#0050b3;">
+              <td style="padding:10px; font-size:15px;" colSpan="4">Sau miễn giảm</td>
+              <td style="padding:10px; text-align:right; font-size:15px;">${netCurrentMonth.toLocaleString("vi-VN")} đ</td>
+            </tr>`
+                : ""
+            }
           </tbody>
         </table>
       </div>`
         : `<p style="margin:6px 0;"><strong>Chi tiết tháng ${invoice.month + 1}:</strong> Không có buổi học</p>`;
 
-    const combinedTotalDue = totalDebt + currentMonthTotal;
+    const combinedTotalDue = totalDebt + netCurrentMonth;
 
     return `
       <div style="font-family: 'Times New Roman', serif; padding: 40px 20px 20px 20px; margin: 40px 1px 1px 1px; position: relative;">
@@ -1467,7 +1491,7 @@ const InvoicePage = () => {
               ${debtDetailsHtml}
               <div style="margin:16px 0; padding:10px 14px; border:2px solid #c40000; border-radius:8px;">
                 <p style="margin:0; color:#c40000; font-size:15px; font-weight:700; text-align:center;">TỔNG PHẢI THU THÁNG ${invoice.month + 1}</p>
-                <p style="margin:4px 0 0 0; color:#c40000; font-size:22px; font-weight:700; text-align:center;">${invoice.finalAmount.toLocaleString("vi-VN")} đ</p>
+                <p style="margin:4px 0 0 0; color:#c40000; font-size:22px; font-weight:700; text-align:center;">${combinedTotalDue.toLocaleString("vi-VN")} đ</p>
               </div>
               ${totalDebt > 0 ? `<p style="margin-top: 12px; color: #ff4d4f;"><strong>Nợ các tháng trước:</strong> ${totalDebt.toLocaleString("vi-VN")} đ</p>` : ""}
               <p style="margin-top: 12px;"><strong>Ghi chú:</strong> ${(invoice as any).note || ""}</p>
@@ -1484,7 +1508,7 @@ const InvoicePage = () => {
               <p style="margin: 0 0 12px 0; font-weight: 700;">NGUYEN THI HOA<br/>4319888</p>
               <div style="display: flex; align-items: center; justify-content: center;">
                 <img
-                  src="${generateVietQR(invoice.finalAmount.toString(), invoice.studentName, (invoice.month + 1).toString())}"
+                  src="${generateVietQR(combinedTotalDue.toString(), invoice.studentName, (invoice.month + 1).toString())}"
                   alt="VietQR"
                   style="width: 180px; height: 180px; border: 1px solid #eee; padding: 8px; border-radius: 6px; background: #fff;"
                 />
