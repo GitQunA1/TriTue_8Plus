@@ -85,6 +85,8 @@ export interface AttendanceSession {
     "Người điểm danh"?: string; // Person who took attendance
     "Thời gian hoàn thành"?: string; // Completion time
     "Người hoàn thành"?: string; // Person who completed
+    "Nội dung buổi học"?: string; // Lesson content
+    "Tài liệu nội dung"?: any[]; // Lesson attachments
 }
 
 export interface ScoreDetail {

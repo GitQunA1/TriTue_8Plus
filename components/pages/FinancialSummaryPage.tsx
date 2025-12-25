@@ -411,7 +411,7 @@ const FinancialSummaryPage = () => {
       classId: string;
       className: string;
       totalSessions: number;
-      totalStudents: number; // Tổng số học sinh (unique)
+      totalStudents: Set<string>; // Tổng số học sinh (unique)
       totalRevenue: number;
       avgRevenuePerSession: number;
     }> = {};
@@ -484,7 +484,7 @@ const FinancialSummaryPage = () => {
             classId,
             className,
             totalSessions: 0,
-            totalStudents: new Set<string>() as any,
+            totalStudents: new Set<string>(),
             totalRevenue: 0,
             avgRevenuePerSession: pricePerSession,
           };
@@ -492,7 +492,7 @@ const FinancialSummaryPage = () => {
 
         // Add sessions and revenue proportionally
         classRevenueMap[classId].totalSessions += dist.sessions;
-        (classRevenueMap[classId].totalStudents as Set<string>).add(studentId);
+        classRevenueMap[classId].totalStudents.add(studentId);
         // Distribute amount proportionally based on sessions
         const classAmount = (dist.sessions / invoiceTotalSessions) * invoiceTotalAmount;
         classRevenueMap[classId].totalRevenue += classAmount;
@@ -502,7 +502,7 @@ const FinancialSummaryPage = () => {
     // Convert Set to number for totalStudents
     const result = Object.values(classRevenueMap).map(item => ({
       ...item,
-      totalStudents: (item.totalStudents as Set<string>).size || 0,
+      totalStudents: item.totalStudents.size || 0,
     })).sort((a, b) => b.totalRevenue - a.totalRevenue);
 
     // Debug: Log totals for verification
@@ -2005,7 +2005,7 @@ const FinancialSummaryPage = () => {
               }}
               onBlur={(e) => {
                 // When user clicks away, if they typed a new value, add it
-                const inputValue = e.currentTarget.value?.trim();
+                const inputValue = ((e.currentTarget as HTMLInputElement).value || "").trim();
                 if (inputValue && !expenseCategories.includes(inputValue)) {
                   addExpenseCategory(inputValue);
                   form.setFieldsValue({ category: inputValue });
@@ -2014,8 +2014,8 @@ const FinancialSummaryPage = () => {
               }}
               onKeyDown={(e) => {
                 // When user presses Enter on a new value
-                if (e.key === 'Enter') {
-                  const inputValue = (e.currentTarget as HTMLInputElement).value?.trim();
+                if ((e as any).key === 'Enter') {
+                  const inputValue = ((e.currentTarget as HTMLInputElement).value || "").trim();
                   if (inputValue && !expenseCategories.includes(inputValue)) {
                     e.preventDefault();
                     addExpenseCategory(inputValue);

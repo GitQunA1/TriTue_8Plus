@@ -74,6 +74,7 @@ interface AttendanceSession {
   "Student IDs"?: string[];
   "Điểm danh"?: any[];
   "Phụ cấp di chuyển"?: number;
+  "Nội dung buổi học"?: string;
   [key: string]: any;
 }
 
