@@ -63,7 +63,7 @@ const StaffAttendance = () => {
   const { userProfile } = useAuth();
   const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
   const [attendanceSessions, setAttendanceSessions] = useState<StaffAttendanceSession[]>([]);
-  const [selectedDate, setSelectedDate] = useState<Dayjs>(dayjs());
+  const [selectedMonth, setSelectedMonth] = useState<Dayjs>(dayjs());
   const [selectedStaffId, setSelectedStaffId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<string>("daily");
@@ -111,26 +111,61 @@ const StaffAttendance = () => {
     return () => unsubscribe();
   }, []);
 
-  // Get attendance for selected date
-  const dayAttendance = useMemo(() => {
-    const dateStr = selectedDate.format("YYYY-MM-DD");
+  // Get attendance for selected month
+  const monthAttendance = useMemo(() => {
+    const yearMonth = selectedMonth.format("YYYY-MM");
     return attendanceSessions
-      .filter((session) => session["Ngày"] === dateStr)
+      .filter((session) => session["Ngày"]?.startsWith(yearMonth))
       .sort((a, b) => {
-        // Sort by check-in time if available
+        // Sort by date then check-in time
+        const dateCompare = (a["Ngày"] || "").localeCompare(b["Ngày"] || "");
+        if (dateCompare !== 0) return dateCompare;
         if (a["Giờ vào"] && b["Giờ vào"]) {
           return a["Giờ vào"].localeCompare(b["Giờ vào"]);
         }
         return 0;
       });
-  }, [attendanceSessions, selectedDate]);
+  }, [attendanceSessions, selectedMonth]);
 
-  // Count staff on duty (has check-in but no check-out)
-  const staffOnDuty = useMemo(() => {
-    return dayAttendance.filter(
-      (session) => session["Giờ vào"] && !session["Giờ ra"]
-    ).length;
-  }, [dayAttendance]);
+  // Group attendance by date
+  const attendanceByDate = useMemo(() => {
+    const grouped: { [date: string]: StaffAttendanceSession[] } = {};
+    monthAttendance.forEach((session) => {
+      const date = session["Ngày"];
+      if (date) {
+        if (!grouped[date]) {
+          grouped[date] = [];
+        }
+        grouped[date].push(session);
+      }
+    });
+    return grouped;
+  }, [monthAttendance]);
+
+  // Calculate daily stats
+  const dailyStats = useMemo(() => {
+    return Object.entries(attendanceByDate).map(([date, sessions]) => {
+      const uniqueStaff = new Set(sessions.map(s => s["Staff ID"])).size;
+      return {
+        date,
+        staffCount: uniqueStaff,
+        sessionCount: sessions.length,
+        displayDate: dayjs(date).format("DD/MM/YYYY"),
+      };
+    }).sort((a, b) => b.date.localeCompare(a.date));
+  }, [attendanceByDate]);
+
+  // Monthly statistics
+  const monthlyStats = useMemo(() => {
+    const totalSessions = monthAttendance.length;
+    const uniqueStaff = new Set(monthAttendance.map(s => s["Staff ID"])).size;
+    const totalDays = Object.keys(attendanceByDate).length;
+    return {
+      totalSessions,
+      uniqueStaff,
+      totalDays,
+    };
+  }, [monthAttendance, attendanceByDate]);
 
   // Handle check-in
   const handleCheckIn = async () => {
@@ -145,9 +180,10 @@ const StaffAttendance = () => {
       return;
     }
 
-    const dateStr = selectedDate.format("YYYY-MM-DD");
+    const dateStr = dayjs().format("YYYY-MM-DD");
     const checkInTime = dayjs().format("HH:mm");
-    const existingSession = dayAttendance.find(
+    const todayAttendance = monthAttendance.filter(s => s["Ngày"] === dateStr);
+    const existingSession = todayAttendance.find(
       (s) => s["Staff ID"] === selectedStaffId
     );
 
@@ -209,20 +245,24 @@ const StaffAttendance = () => {
     }
   };
 
-  // Calculate total hours
-  const calculateTotalHours = (checkIn: string, checkOut: string): number => {
-    if (!checkIn || !checkOut) return 0;
+  // Calculate total hours and minutes
+  const calculateTotalTime = (checkIn: string, checkOut: string): { hours: number; minutes: number; total: number } => {
+    if (!checkIn || !checkOut) return { hours: 0, minutes: 0, total: 0 };
     try {
       const inTime = dayjs(checkIn, "HH:mm");
       const outTime = dayjs(checkOut, "HH:mm");
       if (inTime.isValid() && outTime.isValid()) {
-        const hours = outTime.diff(inTime, "hour", true);
-        return hours > 0 ? Math.round(hours * 10) / 10 : 0;
+        const totalMinutes = outTime.diff(inTime, "minute");
+        if (totalMinutes > 0) {
+          const hours = Math.floor(totalMinutes / 60);
+          const minutes = totalMinutes % 60;
+          return { hours, minutes, total: totalMinutes / 60 };
+        }
       }
     } catch (error) {
-      console.error("Error calculating hours:", error);
+      console.error("Error calculating time:", error);
     }
-    return 0;
+    return { hours: 0, minutes: 0, total: 0 };
   };
 
   // Get status label and color
@@ -256,6 +296,18 @@ const StaffAttendance = () => {
 
   // Columns for daily attendance log
   const dailyColumns = [
+    {
+      title: "NGÀY",
+      dataIndex: "Ngày",
+      key: "date",
+      width: 120,
+      align: "center" as const,
+      render: (date: string) => (
+        <span style={{ fontWeight: 600, fontSize: "14px" }}>
+          {dayjs(date).format("DD/MM/YYYY")}
+        </span>
+      ),
+    },
     {
       title: "NHÂN VIÊN",
       dataIndex: "Nhân viên",
@@ -313,9 +365,11 @@ const StaffAttendance = () => {
       width: 150,
       align: "center" as const,
       render: (_: any, record: StaffAttendanceSession) => {
-        const hours = calculateTotalHours(record["Giờ vào"] || "", record["Giờ ra"] || "");
-        return hours > 0 ? (
-          <Tag color="blue" style={{ fontSize: "15px", padding: "6px 12px" }}>{hours.toFixed(1)}h</Tag>
+        const time = calculateTotalTime(record["Giờ vào"] || "", record["Giờ ra"] || "");
+        return time.total > 0 ? (
+          <Tag color="blue" style={{ fontSize: "15px", padding: "6px 12px" }}>
+            {time.hours}h {time.minutes}m
+          </Tag>
         ) : (
           <span style={{ color: "#999", fontSize: "15px" }}>-</span>
         );
@@ -365,12 +419,13 @@ const StaffAttendance = () => {
                 <Space direction="vertical" style={{ width: "100%" }} size="middle">
                   <div>
                     <label style={{ display: "block", marginBottom: 8, fontWeight: 500 }}>
-                      NGÀY LÀM VIỆC
+                      CHỌN THÁNG
                     </label>
                     <DatePicker
-                      value={selectedDate}
-                      onChange={(date) => setSelectedDate(date || dayjs())}
-                      format="DD/MM/YYYY"
+                      value={selectedMonth}
+                      onChange={(date) => setSelectedMonth(date || dayjs())}
+                      picker="month"
+                      format="MM/YYYY"
                       style={{ width: "100%" }}
                       allowClear={false}
                     />
@@ -411,16 +466,53 @@ const StaffAttendance = () => {
                 </Space>
               </Card>
 
-              {/* Staff On Duty Stats */}
-              <Card size="small">
-                <Statistic
-                  title="NHÂN SỰ ĐANG TRỰC"
-                  value={staffOnDuty}
-                  prefix={<UserOutlined />}
-                  valueStyle={{ fontSize: "32px", fontWeight: "bold" }}
-                />
-                <div style={{ marginTop: 8, color: "#999", fontSize: "12px" }}>
-                  Tổng số ca trong ngày: {dayAttendance.length}
+              {/* Monthly Stats */}
+              <Card size="small" title={`Thống kê tháng ${selectedMonth.format("MM/YYYY")}`}>
+                <Space direction="vertical" style={{ width: "100%" }} size="small">
+                  <Statistic
+                    title="Tổng số nhân viên"
+                    value={monthlyStats.uniqueStaff}
+                    prefix={<UserOutlined />}
+                    valueStyle={{ fontSize: "24px", fontWeight: "bold" }}
+                  />
+                  <Statistic
+                    title="Tổng số ca"
+                    value={monthlyStats.totalSessions}
+                    prefix={<ClockCircleOutlined />}
+                    valueStyle={{ fontSize: "24px", fontWeight: "bold" }}
+                  />
+                  <Statistic
+                    title="Số ngày có dữ liệu"
+                    value={monthlyStats.totalDays}
+                    prefix={<CalendarOutlined />}
+                    valueStyle={{ fontSize: "24px", fontWeight: "bold" }}
+                  />
+                </Space>
+              </Card>
+
+              {/* Daily Breakdown */}
+              <Card size="small" title="Chi tiết theo ngày">
+                <div style={{ maxHeight: "400px", overflowY: "auto" }}>
+                  {dailyStats.length > 0 ? (
+                    <Space direction="vertical" style={{ width: "100%" }} size="small">
+                      {dailyStats.map((stat) => (
+                        <Card
+                          key={stat.date}
+                          size="small"
+                          style={{ backgroundColor: "#f5f5f5" }}
+                        >
+                          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                            📅 {stat.displayDate}
+                          </div>
+                          <div style={{ fontSize: "13px", color: "#666" }}>
+                            👥 {stat.staffCount} nhân viên • 🔄 {stat.sessionCount} ca
+                          </div>
+                        </Card>
+                      ))}
+                    </Space>
+                  ) : (
+                    <Empty description="Chưa có dữ liệu" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  )}
                 </div>
               </Card>
             </Space>
@@ -429,18 +521,18 @@ const StaffAttendance = () => {
           {/* Right Panel - Attendance Log */}
           <Col xs={24} md={16}>
             <Card
-              title={`Nhật ký chấm công - ${selectedDate.format("YYYY-MM-DD")}`}
+              title={`Nhật ký chấm công - Tháng ${selectedMonth.format("MM/YYYY")}`}
               size="small"
             >
               <Table
                 columns={dailyColumns}
-                dataSource={dayAttendance}
+                dataSource={monthAttendance}
                 rowKey="id"
                 loading={loading}
-                pagination={false}
+                pagination={{ pageSize: 20, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100] }}
                 locale={{
                   emptyText: (
-                    <Empty description="Chưa có dữ liệu chấm công ngày này." />
+                    <Empty description="Chưa có dữ liệu chấm công tháng này." />
                   ),
                 }}
                 size="small"
