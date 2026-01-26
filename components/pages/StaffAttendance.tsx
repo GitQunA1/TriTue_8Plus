@@ -14,6 +14,10 @@ import {
   Statistic,
   Empty,
   Tabs,
+  Checkbox,
+  Modal,
+  Form,
+  Input,
 } from "antd";
 import {
   ClockCircleOutlined,
@@ -22,6 +26,10 @@ import {
   DeleteOutlined,
   UserOutlined,
   CalendarOutlined,
+  LeftOutlined,
+  RightOutlined,
+  PlusOutlined,
+  EditOutlined,
 } from "@ant-design/icons";
 import { useAuth } from "../../contexts/AuthContext";
 import { ref, onValue, remove, push, set, update } from "firebase/database";
@@ -70,9 +78,13 @@ const StaffAttendance = () => {
 
   const isAdmin = userProfile?.isAdmin === true || userProfile?.role === "admin";
 
-  // Load staff members
+  // Staff management state
+  const [isAddStaffModalOpen, setIsAddStaffModalOpen] = useState(false);
+  const [addStaffForm] = Form.useForm();
+
+  // Load staff members (from separate Nhân_viên table, not Giáo_viên)
   useEffect(() => {
-    const staffRef = ref(database, "datasheet/Giáo_viên");
+    const staffRef = ref(database, "datasheet/Nhân_viên");
     const unsubscribe = onValue(staffRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
@@ -167,6 +179,134 @@ const StaffAttendance = () => {
     };
   }, [monthAttendance, attendanceByDate]);
 
+  // Calculate total hours and minutes - MOVED UP before monthlyHoursPerStaff
+  const calculateTotalTime = (checkIn: string, checkOut: string): { hours: number; minutes: number; total: number } => {
+    if (!checkIn || !checkOut) return { hours: 0, minutes: 0, total: 0 };
+    try {
+      const inTime = dayjs(checkIn, "HH:mm");
+      const outTime = dayjs(checkOut, "HH:mm");
+      if (inTime.isValid() && outTime.isValid()) {
+        const totalMinutes = outTime.diff(inTime, "minute");
+        if (totalMinutes > 0) {
+          const hours = Math.floor(totalMinutes / 60);
+          const minutes = totalMinutes % 60;
+          return { hours, minutes, total: totalMinutes / 60 };
+        }
+      }
+    } catch (error) {
+      console.error("Error calculating time:", error);
+    }
+    return { hours: 0, minutes: 0, total: 0 };
+  };
+
+  // Calculate monthly hours per staff
+  const monthlyHoursPerStaff = useMemo(() => {
+    const staffHours: { [staffId: string]: { name: string; totalMinutes: number; sessionCount: number } } = {};
+    
+    monthAttendance.forEach((session) => {
+      const staffId = session["Staff ID"];
+      const staffName = session["Nhân viên"];
+      
+      if (!staffHours[staffId]) {
+        staffHours[staffId] = { name: staffName, totalMinutes: 0, sessionCount: 0 };
+      }
+      
+      if (session["Giờ vào"] && session["Giờ ra"]) {
+        const time = calculateTotalTime(session["Giờ vào"], session["Giờ ra"]);
+        staffHours[staffId].totalMinutes += time.hours * 60 + time.minutes;
+        staffHours[staffId].sessionCount += 1;
+      }
+    });
+    
+    return Object.entries(staffHours)
+      .map(([staffId, data]) => ({
+        staffId,
+        staffName: data.name,
+        totalHours: Math.floor(data.totalMinutes / 60),
+        totalMinutes: data.totalMinutes % 60,
+        sessionCount: data.sessionCount,
+      }))
+      .sort((a, b) => (b.totalHours * 60 + b.totalMinutes) - (a.totalHours * 60 + a.totalMinutes));
+  }, [monthAttendance]);
+
+  // Weekly schedule state
+  const [currentWeekStart, setCurrentWeekStart] = useState<Dayjs>(dayjs().startOf('week'));
+  
+  // Weekly duty schedule (lịch trực) - stored in Firebase
+  const [weeklyDutySchedule, setWeeklyDutySchedule] = useState<{ [dateStaffKey: string]: boolean }>({});
+
+  // Load weekly duty schedule from Firebase
+  useEffect(() => {
+    const dutyRef = ref(database, "datasheet/Lịch_trực_nhân_sự");
+    const unsubscribe = onValue(dutyRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setWeeklyDutySchedule(data);
+      } else {
+        setWeeklyDutySchedule({});
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Toggle duty for a specific staff on a specific date
+  const toggleDuty = async (date: Dayjs, staffId: string) => {
+    const dateStr = date.format("YYYY-MM-DD");
+    const key = `${dateStr}_${staffId}`;
+    const currentValue = weeklyDutySchedule[key] || false;
+    
+    try {
+      const dutyRef = ref(database, `datasheet/Lịch_trực_nhân_sự/${key}`);
+      if (currentValue) {
+        // Remove duty
+        await remove(dutyRef);
+      } else {
+        // Add duty
+        await set(dutyRef, true);
+      }
+    } catch (error) {
+      console.error("Error toggling duty:", error);
+      message.error("Lỗi khi cập nhật lịch trực");
+    }
+  };
+
+  // Check if staff has duty on a specific date
+  const hasDuty = (date: Dayjs, staffId: string): boolean => {
+    const dateStr = date.format("YYYY-MM-DD");
+    const key = `${dateStr}_${staffId}`;
+    return weeklyDutySchedule[key] === true;
+  };
+
+  // Count total staff on duty for a specific date
+  const countDutyForDate = (date: Dayjs): number => {
+    const dateStr = date.format("YYYY-MM-DD");
+    return Object.entries(weeklyDutySchedule)
+      .filter(([key, value]) => key.startsWith(dateStr) && value === true)
+      .length;
+  };
+
+  // Get days in current week
+  const weekDays = useMemo(() => {
+    const days: Dayjs[] = [];
+    for (let i = 0; i < 7; i++) {
+      days.push(currentWeekStart.add(i, 'day'));
+    }
+    return days;
+  }, [currentWeekStart]);
+
+  // Get attendance for a specific day and staff
+  const getAttendanceForDayAndStaff = (date: Dayjs, staffId: string) => {
+    const dateStr = date.format("YYYY-MM-DD");
+    return attendanceSessions.find(
+      (s) => s["Ngày"] === dateStr && s["Staff ID"] === staffId
+    );
+  };
+
+  // Navigate weeks
+  const goToPrevWeek = () => setCurrentWeekStart(currentWeekStart.subtract(1, 'week'));
+  const goToNextWeek = () => setCurrentWeekStart(currentWeekStart.add(1, 'week'));
+  const goToCurrentWeek = () => setCurrentWeekStart(dayjs().startOf('week'));
+
   // Handle check-in
   const handleCheckIn = async () => {
     if (!selectedStaffId) {
@@ -245,26 +385,6 @@ const StaffAttendance = () => {
     }
   };
 
-  // Calculate total hours and minutes
-  const calculateTotalTime = (checkIn: string, checkOut: string): { hours: number; minutes: number; total: number } => {
-    if (!checkIn || !checkOut) return { hours: 0, minutes: 0, total: 0 };
-    try {
-      const inTime = dayjs(checkIn, "HH:mm");
-      const outTime = dayjs(checkOut, "HH:mm");
-      if (inTime.isValid() && outTime.isValid()) {
-        const totalMinutes = outTime.diff(inTime, "minute");
-        if (totalMinutes > 0) {
-          const hours = Math.floor(totalMinutes / 60);
-          const minutes = totalMinutes % 60;
-          return { hours, minutes, total: totalMinutes / 60 };
-        }
-      }
-    } catch (error) {
-      console.error("Error calculating time:", error);
-    }
-    return { hours: 0, minutes: 0, total: 0 };
-  };
-
   // Get status label and color
   const getStatusInfo = (session: StaffAttendanceSession) => {
     if (session["Giờ vào"] && session["Giờ ra"]) {
@@ -291,6 +411,40 @@ const StaffAttendance = () => {
     } catch (error) {
       console.error("Error deleting attendance:", error);
       message.error("Lỗi khi xóa bản ghi");
+    }
+  };
+
+  // Add new staff member (to Nhân_viên table, separate from Giáo_viên)
+  const handleAddStaff = async (values: any) => {
+    try {
+      const staffRef = ref(database, "datasheet/Nhân_viên");
+      const newStaffRef = push(staffRef);
+      await set(newStaffRef, {
+        "Họ và tên": values.name,
+        "Email": values.email || "",
+        "Số điện thoại": values.phone || "",
+        "Vị trí": values.position || "",
+        "Trạng thái": "Đang làm việc",
+        "Ngày tạo": dayjs().format("YYYY-MM-DD HH:mm:ss"),
+      });
+      message.success(`Đã thêm nhân viên ${values.name}`);
+      setIsAddStaffModalOpen(false);
+      addStaffForm.resetFields();
+    } catch (error) {
+      console.error("Error adding staff:", error);
+      message.error("Lỗi khi thêm nhân viên");
+    }
+  };
+
+  // Delete staff member (from Nhân_viên table, separate from Giáo_viên)
+  const handleDeleteStaff = async (staffId: string, staffName: string) => {
+    try {
+      const staffRef = ref(database, `datasheet/Nhân_viên/${staffId}`);
+      await remove(staffRef);
+      message.success(`Đã xóa nhân viên ${staffName}`);
+    } catch (error) {
+      console.error("Error deleting staff:", error);
+      message.error("Lỗi khi xóa nhân viên");
     }
   };
 
@@ -467,52 +621,167 @@ const StaffAttendance = () => {
               </Card>
 
               {/* Monthly Stats */}
-              <Card size="small" title={`Thống kê tháng ${selectedMonth.format("MM/YYYY")}`}>
-                <Space direction="vertical" style={{ width: "100%" }} size="small">
-                  <Statistic
-                    title="Tổng số nhân viên"
-                    value={monthlyStats.uniqueStaff}
-                    prefix={<UserOutlined />}
-                    valueStyle={{ fontSize: "24px", fontWeight: "bold" }}
-                  />
-                  <Statistic
-                    title="Tổng số ca"
-                    value={monthlyStats.totalSessions}
-                    prefix={<ClockCircleOutlined />}
-                    valueStyle={{ fontSize: "24px", fontWeight: "bold" }}
-                  />
-                  <Statistic
-                    title="Số ngày có dữ liệu"
-                    value={monthlyStats.totalDays}
-                    prefix={<CalendarOutlined />}
-                    valueStyle={{ fontSize: "24px", fontWeight: "bold" }}
-                  />
-                </Space>
-              </Card>
-
-              {/* Daily Breakdown */}
-              <Card size="small" title="Chi tiết theo ngày">
+              <Card size="small" title="📅 Lịch trực theo tuần (Tích để đánh dấu)">
+                <div style={{ marginBottom: 12 }}>
+                  <Space style={{ width: "100%", justifyContent: "space-between" }}>
+                    <Button icon={<LeftOutlined />} onClick={goToPrevWeek} />
+                    <span style={{ fontWeight: 600 }}>
+                      {currentWeekStart.format("DD/MM")} - {currentWeekStart.add(6, 'day').format("DD/MM/YYYY")}
+                    </span>
+                    <Button icon={<RightOutlined />} onClick={goToNextWeek} />
+                  </Space>
+                  <Button 
+                    type="link" 
+                    onClick={goToCurrentWeek} 
+                    style={{ width: "100%", marginTop: 4 }}
+                  >
+                    Tuần hiện tại
+                  </Button>
+                </div>
+                
                 <div style={{ maxHeight: "400px", overflowY: "auto" }}>
-                  {dailyStats.length > 0 ? (
-                    <Space direction="vertical" style={{ width: "100%" }} size="small">
-                      {dailyStats.map((stat) => (
-                        <Card
-                          key={stat.date}
-                          size="small"
-                          style={{ backgroundColor: "#f5f5f5" }}
-                        >
-                          <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                            📅 {stat.displayDate}
-                          </div>
-                          <div style={{ fontSize: "13px", color: "#666" }}>
-                            👥 {stat.staffCount} nhân viên • 🔄 {stat.sessionCount} ca
-                          </div>
-                        </Card>
-                      ))}
-                    </Space>
+                  {staffMembers.length > 0 ? (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ padding: "6px", borderBottom: "1px solid #ddd", textAlign: "left", minWidth: "80px" }}>Nhân viên</th>
+                          {weekDays.map((day) => (
+                            <th 
+                              key={day.format("YYYY-MM-DD")} 
+                              style={{ 
+                                padding: "4px 2px", 
+                                borderBottom: "1px solid #ddd", 
+                                textAlign: "center",
+                                backgroundColor: day.isSame(dayjs(), 'day') ? "#e6f7ff" : "transparent",
+                                minWidth: "36px"
+                              }}
+                            >
+                              <div>{day.format("dd")}</div>
+                              <div style={{ fontSize: "10px", color: "#666" }}>{day.format("DD")}</div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {staffMembers.map((staff) => (
+                          <tr key={staff.id}>
+                            <td style={{ padding: "6px", borderBottom: "1px solid #f0f0f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "80px" }}>
+                              {staff["Họ và tên"]?.split(" ").slice(-2).join(" ")}
+                            </td>
+                            {weekDays.map((day) => {
+                              return (
+                                <td 
+                                  key={day.format("YYYY-MM-DD")} 
+                                  style={{ 
+                                    padding: "4px 2px", 
+                                    borderBottom: "1px solid #f0f0f0", 
+                                    textAlign: "center",
+                                    backgroundColor: day.isSame(dayjs(), 'day') ? "#e6f7ff" : "transparent"
+                                  }}
+                                >
+                                  <Checkbox 
+                                    checked={hasDuty(day, staff.id)} 
+                                    onChange={() => toggleDuty(day, staff.id)}
+                                    style={{ transform: "scale(1.2)" }}
+                                  />
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                        {/* Summary row - count of staff on duty per day */}
+                        <tr style={{ backgroundColor: "#fafafa", fontWeight: 600 }}>
+                          <td style={{ padding: "6px", borderTop: "2px solid #ddd" }}>Tổng trực</td>
+                          {weekDays.map((day) => (
+                            <td 
+                              key={day.format("YYYY-MM-DD")} 
+                              style={{ 
+                                padding: "4px 2px", 
+                                borderTop: "2px solid #ddd",
+                                textAlign: "center",
+                                backgroundColor: day.isSame(dayjs(), 'day') ? "#bae7ff" : "#fafafa",
+                                color: countDutyForDate(day) > 0 ? "#52c41a" : "#999"
+                              }}
+                            >
+                              {countDutyForDate(day)}
+                            </td>
+                          ))}
+                        </tr>
+                      </tbody>
+                    </table>
                   ) : (
                     <Empty description="Chưa có dữ liệu" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                   )}
+                </div>
+                
+                <div style={{ marginTop: 8, fontSize: "11px", color: "#666" }}>
+                  <span>✅ Tích chọn để đánh dấu nhân viên trực trong ngày</span>
+                </div>
+              </Card>
+
+              {/* Staff Management Card */}
+              <Card 
+                size="small" 
+                title="👥 Quản lý Nhân viên"
+                extra={
+                  <Button 
+                    type="primary" 
+                    icon={<PlusOutlined />} 
+                    size="small"
+                    onClick={() => setIsAddStaffModalOpen(true)}
+                  >
+                    Thêm
+                  </Button>
+                }
+              >
+                <div style={{ maxHeight: "300px", overflowY: "auto" }}>
+                  {staffMembers.length > 0 ? (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ padding: "8px", borderBottom: "1px solid #ddd", textAlign: "left" }}>Họ tên</th>
+                          <th style={{ padding: "8px", borderBottom: "1px solid #ddd", textAlign: "left" }}>Vị trí</th>
+                          <th style={{ padding: "8px", borderBottom: "1px solid #ddd", textAlign: "center", width: "60px" }}>Xóa</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {staffMembers.map((staff) => (
+                          <tr key={staff.id}>
+                            <td style={{ padding: "8px", borderBottom: "1px solid #f0f0f0" }}>
+                              <Space>
+                                <UserOutlined />
+                                <span>{staff["Họ và tên"]}</span>
+                              </Space>
+                            </td>
+                            <td style={{ padding: "8px", borderBottom: "1px solid #f0f0f0", color: "#666" }}>
+                              {staff["Vị trí"] || "-"}
+                            </td>
+                            <td style={{ padding: "8px", borderBottom: "1px solid #f0f0f0", textAlign: "center" }}>
+                              <Popconfirm
+                                title="Xóa nhân viên"
+                                description={`Bạn có chắc muốn xóa ${staff["Họ và tên"]}?`}
+                                onConfirm={() => handleDeleteStaff(staff.id, staff["Họ và tên"])}
+                                okText="Xóa"
+                                cancelText="Hủy"
+                                okButtonProps={{ danger: true }}
+                              >
+                                <Button 
+                                  size="small" 
+                                  danger 
+                                  icon={<DeleteOutlined />}
+                                />
+                              </Popconfirm>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <Empty description="Chưa có nhân viên" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  )}
+                </div>
+                <div style={{ marginTop: 8, fontSize: "11px", color: "#666" }}>
+                  Tổng: <strong>{staffMembers.length}</strong> nhân viên
                 </div>
               </Card>
             </Space>
@@ -538,6 +807,58 @@ const StaffAttendance = () => {
                 size="small"
               />
             </Card>
+
+            {/* Monthly Hours Summary per Staff */}
+            <Card
+              title={`Thống kê giờ làm tháng ${selectedMonth.format("MM/YYYY")}`}
+              size="small"
+              style={{ marginTop: 16 }}
+            >
+              {monthlyHoursPerStaff.length > 0 ? (
+                <Table
+                  dataSource={monthlyHoursPerStaff}
+                  rowKey="staffId"
+                  pagination={false}
+                  size="small"
+                  columns={[
+                    {
+                      title: "NHÂN VIÊN",
+                      dataIndex: "staffName",
+                      key: "staffName",
+                      render: (name: string) => (
+                        <Space>
+                          <UserOutlined />
+                          <strong>{name}</strong>
+                        </Space>
+                      ),
+                    },
+                    {
+                      title: "SỐ CA",
+                      dataIndex: "sessionCount",
+                      key: "sessionCount",
+                      width: 100,
+                      align: "center" as const,
+                      render: (count: number) => (
+                        <Tag color="blue">{count} ca</Tag>
+                      ),
+                    },
+                    {
+                      title: "TỔNG GIỜ",
+                      key: "totalTime",
+                      width: 150,
+                      align: "center" as const,
+                      render: (_: any, record: { totalHours: number; totalMinutes: number }) => (
+                        <Tag color="green" style={{ fontSize: "14px", padding: "4px 12px" }}>
+                          {record.totalHours}h {record.totalMinutes}m
+                        </Tag>
+                      ),
+                    },
+                  ]}
+                />
+              ) : (
+                <Empty description="Chưa có dữ liệu giờ làm" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              )}
+            </Card>
           </Col>
         </Row>
       ),
@@ -552,6 +873,69 @@ const StaffAttendance = () => {
         items={tabItems}
         size="large"
       />
+
+      {/* Add Staff Modal */}
+      <Modal
+        title="Thêm Nhân Viên Mới"
+        open={isAddStaffModalOpen}
+        onCancel={() => {
+          setIsAddStaffModalOpen(false);
+          addStaffForm.resetFields();
+        }}
+        footer={null}
+        destroyOnClose
+      >
+        <Form
+          form={addStaffForm}
+          layout="vertical"
+          onFinish={handleAddStaff}
+          style={{ marginTop: 16 }}
+        >
+          <Form.Item
+            name="name"
+            label="Họ và tên"
+            rules={[{ required: true, message: "Vui lòng nhập họ tên" }]}
+          >
+            <Input placeholder="Nguyễn Văn A" prefix={<UserOutlined />} />
+          </Form.Item>
+
+          <Form.Item
+            name="email"
+            label="Email"
+            rules={[{ type: "email", message: "Email không hợp lệ" }]}
+          >
+            <Input placeholder="email@example.com" />
+          </Form.Item>
+
+          <Form.Item
+            name="phone"
+            label="Số điện thoại"
+          >
+            <Input placeholder="0123456789" />
+          </Form.Item>
+
+          <Form.Item
+            name="position"
+            label="Vị trí"
+          >
+            <Input placeholder="Giáo viên / Trợ giảng / ..." />
+          </Form.Item>
+
+          <Form.Item style={{ marginBottom: 0, textAlign: "right" }}>
+            <Space>
+              <Button onClick={() => {
+                setIsAddStaffModalOpen(false);
+                addStaffForm.resetFields();
+              }}>
+                Hủy
+              </Button>
+              <Button type="primary" htmlType="submit" icon={<PlusOutlined />}>
+                Thêm nhân viên
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Modal>
     </WrapperContent>
   );
 };

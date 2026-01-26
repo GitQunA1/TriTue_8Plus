@@ -2270,15 +2270,15 @@ const InvoicePage = () => {
       
                   <!-- Header -->
                   <div class="header">
+                      <!-- Logo Container (Có Sẵn Logo) - Moved to Left -->
+                      <div class="logo-container">
+                          <img class="logo-img" src="${logoUrl}">
+                      </div>
                       <div class="header-left">
                           <div class="brand-name">TRUNG TÂM PHÁT TRIỂN TƯ DUY - TRÍ TUỆ 8+</div>
                           <div class="doc-title">PHIẾU THU HỌC PHÍ</div>
                           <div class="sub-title" contenteditable="true">Tháng ${invoice.month + 1
       } / ${invoice.year}</div>
-                      </div>
-                      <!-- Logo Container (Có Sẵn Logo) -->
-                      <div class="logo-container">
-                          <img class="logo-img" src="${logoUrl}">
                       </div>
                   </div>
       
@@ -2297,9 +2297,9 @@ const InvoicePage = () => {
                               <div class="info-row"><span class="info-label">Người nhận:</span><span class="info-val">${accountName}</span></div>
                               <div class="info-row"><span class="info-label">NH:</span><span class="info-val" contenteditable="true">${bankId}</span></div>
                               <div class="info-row"><span class="info-label">STK:</span><span class="info-val" contenteditable="true">${accountNo}</span></div>
-                          </div>` : `<div class="info-box" style="background: #fff3cd; border: 2px solid #ffc107;">
-                              <div class="box-title" style="background: #ffc107; color: #856404;"><i class="fas fa-bell"></i> Ghi chú</div>
-                              <div style="padding: 10px; color: #856404; font-size: 13px; line-height: 1.6;">
+                          </div>` : `<div class="info-box">
+                              <div class="box-title"><i class="fas fa-bell"></i> Ghi chú</div>
+                              <div style="padding: 10px; color: #000; font-size: 13px; line-height: 1.6;">
                                   Phụ huynh vui lòng để học phí trong phong bì dán kín. Học sinh nộp tận tay cho bộ phận trực hoặc Thầy/Cô giáo tại lớp.
                               </div>
                           </div>`}
