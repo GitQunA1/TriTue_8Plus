@@ -67,6 +67,7 @@ const ParentPortal: React.FC = () => {
   );
   const [selectedScheduleEvent, setSelectedScheduleEvent] = useState<any>(null);
   const [scheduleDetailModalOpen, setScheduleDetailModalOpen] = useState(false);
+  const [redeemHistoryModalOpen, setRedeemHistoryModalOpen] = useState(false);
   const [rooms, setRooms] = useState<Map<string, any>>(new Map());
   const [customScoresData, setCustomScoresData] = useState<any>({}); // Điểm tự nhập từ các lớp
 
@@ -710,7 +711,11 @@ const ParentPortal: React.FC = () => {
             </Card>
           </Col>
           <Col xs={24} sm={12} md={6}>
-            <Card>
+            <Card 
+              hoverable
+              onClick={() => setRedeemHistoryModalOpen(true)}
+              style={{ cursor: "pointer" }}
+            >
               <Statistic
                 title="Sao đã đổi thưởng"
                 value={stats.redeemedBonusPoints}
@@ -1645,6 +1650,111 @@ const ParentPortal: React.FC = () => {
               </Text>
             </div>
           </Space>
+        )}
+      </Modal>
+
+      {/* Redeem History Modal */}
+      <Modal
+        title={
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <StarOutlined style={{ color: "#faad14", fontSize: 20 }} />
+            <span>Lịch sử đổi thưởng</span>
+          </div>
+        }
+        open={redeemHistoryModalOpen}
+        onCancel={() => setRedeemHistoryModalOpen(false)}
+        footer={[
+          <Button key="close" type="primary" onClick={() => setRedeemHistoryModalOpen(false)}>
+            Đóng
+          </Button>,
+        ]}
+        width={800}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Card size="small" style={{ backgroundColor: "#fffbe6", border: "1px solid #ffe58f" }}>
+            <Row gutter={16}>
+              <Col span={8}>
+                <Statistic
+                  title="Tổng số sao đã đổi"
+                  value={stats.redeemedBonusPoints}
+                  prefix={<StarOutlined style={{ color: "#ff4d4f" }} />}
+                  valueStyle={{ color: "#ff4d4f" }}
+                  suffix="điểm"
+                />
+              </Col>
+              <Col span={8}>
+                <Statistic
+                  title="Số lần đổi thưởng"
+                  value={redeemHistory.length}
+                  prefix={<GiftOutlined style={{ color: "#1890ff" }} />}
+                  valueStyle={{ color: "#1890ff" }}
+                  suffix="lần"
+                />
+              </Col>
+              <Col span={8}>
+                <Statistic
+                  title="Số sao còn lại"
+                  value={stats.totalBonusPoints - stats.redeemedBonusPoints}
+                  prefix={<StarOutlined style={{ color: "#52c41a" }} />}
+                  valueStyle={{ color: "#52c41a" }}
+                  suffix="điểm"
+                />
+              </Col>
+            </Row>
+          </Card>
+        </div>
+
+        {redeemHistory.length === 0 ? (
+          <Empty
+            description="Chưa có lịch sử đổi thưởng"
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            style={{ padding: "40px 0" }}
+          />
+        ) : (
+          <Timeline
+            mode="left"
+            items={redeemHistory.map((item: any) => ({
+              color: "orange",
+              dot: <GiftOutlined style={{ fontSize: 16 }} />,
+              children: (
+                <Card 
+                  size="small" 
+                  style={{ marginBottom: 8 }}
+                  styles={{ body: { padding: 12 } }}
+                >
+                  <Row gutter={16} align="middle">
+                    <Col flex="auto">
+                      <Space direction="vertical" size={4}>
+                        <Text strong style={{ fontSize: 14, color: "#1890ff" }}>
+                          {item["Tên phần thưởng"]}
+                        </Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {dayjs(item["Thời gian đổi"]).format("DD/MM/YYYY HH:mm")}
+                        </Text>
+                        {item["Ghi chú"] && (
+                          <Text style={{ fontSize: 12 }}>
+                            💬 {item["Ghi chú"]}
+                          </Text>
+                        )}
+                      </Space>
+                    </Col>
+                    <Col>
+                      <Tag 
+                        color="red" 
+                        style={{ 
+                          fontSize: 16, 
+                          padding: "4px 12px",
+                          fontWeight: "bold" 
+                        }}
+                      >
+                        -{item["Số điểm"]} ⭐
+                      </Tag>
+                    </Col>
+                  </Row>
+                </Card>
+              ),
+            }))}
+          />
         )}
       </Modal>
     </div>

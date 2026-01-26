@@ -71,7 +71,7 @@ export const useClasses = () => {
         }
     };
 
-    const addStudentToClass = async (classId: string, studentId: string, studentName: string) => {
+    const addStudentToClass = async (classId: string, studentId: string, studentName: string, enrollmentDate?: string) => {
         try {
             const classData = classes.find(c => c.id === classId);
             if (!classData) throw new Error('Class not found');
@@ -79,10 +79,10 @@ export const useClasses = () => {
             const updatedStudentIds = [...(classData['Student IDs'] || []), studentId];
             const updatedStudentNames = [...(classData['Học sinh'] || []), studentName];
             
-            // Track enrollment date
-            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            // Track enrollment date - use provided date or default to today
+            const dateToUse = enrollmentDate || new Date().toISOString().split('T')[0]; // YYYY-MM-DD
             const updatedEnrollments = { ...(classData['Student Enrollments'] || {}) };
-            updatedEnrollments[studentId] = { enrollmentDate: today };
+            updatedEnrollments[studentId] = { enrollmentDate: dateToUse };
 
             await updateClass(classId, {
                 'Student IDs': updatedStudentIds,
@@ -98,7 +98,8 @@ export const useClasses = () => {
 
     const addMultipleStudentsToClass = async (
         classId: string,
-        students: Array<{ id: string; name: string }>
+        students: Array<{ id: string; name: string }>,
+        enrollmentDate?: string
     ) => {
         try {
             const classData = classes.find(c => c.id === classId);
@@ -121,11 +122,11 @@ export const useClasses = () => {
             const updatedStudentIds = [...currentStudentIds, ...newStudents.map(s => s.id)];
             const updatedStudentNames = [...currentStudentNames, ...newStudents.map(s => s.name)];
             
-            // Track enrollment date for new students
-            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            // Track enrollment date for new students - use provided date or default to today
+            const dateToUse = enrollmentDate || new Date().toISOString().split('T')[0]; // YYYY-MM-DD
             const updatedEnrollments = { ...currentEnrollments };
             newStudents.forEach(s => {
-                updatedEnrollments[s.id] = { enrollmentDate: today };
+                updatedEnrollments[s.id] = { enrollmentDate: dateToUse };
             });
 
             await updateClass(classId, {
@@ -134,7 +135,7 @@ export const useClasses = () => {
                 'Student Enrollments': updatedEnrollments
             });
 
-            message.success(`Đã thêm ${newStudents.length} học sinh vào lớp`);
+            message.success(`Đã thêm ${newStudents.length} học sinh vào lớp (từ ngày ${dateToUse})`);
         } catch (error) {
             console.error('Error adding students to class:', error);
             message.error('Không thể thêm học sinh vào lớp');

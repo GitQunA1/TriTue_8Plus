@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Modal, Select, Table, Button, Space, Popconfirm } from 'antd';
-import { DeleteOutlined } from '@ant-design/icons';
+import { Modal, Select, Table, Button, Space, Popconfirm, DatePicker, Typography, Divider } from 'antd';
+import { DeleteOutlined, CalendarOutlined } from '@ant-design/icons';
 import { ref, onValue } from 'firebase/database';
 import { database } from '../firebase';
 import { useClasses } from '../hooks/useClasses';
 import { Class } from '../types';
+import dayjs from 'dayjs';
+
+const { Text } = Typography;
 
 interface AddStudentModalProps {
     open: boolean;
@@ -23,6 +26,7 @@ const AddStudentModal = ({ open, onClose, classData }: AddStudentModalProps) => 
     const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
     const [loadingStudents, setLoadingStudents] = useState(true);
     const [adding, setAdding] = useState(false);
+    const [enrollmentDate, setEnrollmentDate] = useState<dayjs.Dayjs>(dayjs()); // Default to today
     const { addMultipleStudentsToClass, removeStudentFromClass } = useClasses();
 
     useEffect(() => {
@@ -63,8 +67,11 @@ const AddStudentModal = ({ open, onClose, classData }: AddStudentModalProps) => 
                 };
             }).filter(s => s.name); // Filter out any invalid students
 
-            await addMultipleStudentsToClass(classData.id, studentsToAdd);
+            // Pass enrollment date to the function
+            const enrollmentDateStr = enrollmentDate.format('YYYY-MM-DD');
+            await addMultipleStudentsToClass(classData.id, studentsToAdd, enrollmentDateStr);
             setSelectedStudentIds([]);
+            setEnrollmentDate(dayjs()); // Reset to today after adding
         } catch (error) {
             console.error('Error adding students:', error);
         } finally {
@@ -128,7 +135,7 @@ const AddStudentModal = ({ open, onClose, classData }: AddStudentModalProps) => 
             width={800}
         >
             <div style={{ marginBottom: 16 }}>
-                <Space direction="vertical" style={{ width: '100%' }}>
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
                     <Select
                         mode="multiple"
                         placeholder={loadingStudents ? "Đang tải danh sách học sinh..." : `Chọn học sinh (${availableStudents.length} khả dụng)`}
@@ -148,6 +155,23 @@ const AddStudentModal = ({ open, onClose, classData }: AddStudentModalProps) => 
                         notFoundContent={loadingStudents ? "Đang tải..." : "Không tìm thấy học sinh"}
                         maxTagCount="responsive"
                     />
+                    
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <CalendarOutlined style={{ color: '#36797f', fontSize: 16 }} />
+                        <Text strong style={{ minWidth: 100 }}>Ngày đăng ký:</Text>
+                        <DatePicker
+                            value={enrollmentDate}
+                            onChange={(date) => setEnrollmentDate(date || dayjs())}
+                            format="DD/MM/YYYY"
+                            style={{ flex: 1 }}
+                            placeholder="Chọn ngày đăng ký"
+                            disabled={adding}
+                        />
+                    </div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                        💡 Học sinh chỉ xuất hiện trong điểm danh từ ngày đăng ký trở đi
+                    </Text>
+                    
                     <Button
                         type="primary"
                         onClick={handleAddStudents}

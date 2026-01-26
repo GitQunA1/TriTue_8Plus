@@ -755,7 +755,7 @@ const StudentListView: React.FC = () => {
     });
   };
 
-  const handleSaveStudent = async (studentData: Partial<Student>, selectedClassIds: string[] = []) => {
+  const handleSaveStudent = async (studentData: Partial<Student>, selectedClassIds: string[] = [], enrollmentDate?: string) => {
     try {
       const isNew = !studentData.id;
 
@@ -801,7 +801,8 @@ const StudentListView: React.FC = () => {
           // If selected classes provided, add this student to those classes
           if (selectedClassIds && selectedClassIds.length > 0) {
             try {
-              const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+              // Use provided enrollment date or default to today
+              const dateToUse = enrollmentDate || new Date().toISOString().split('T')[0]; // YYYY-MM-DD
               for (const classId of selectedClassIds) {
                 const cls = classes.find((c) => c.id === classId);
                 if (!cls) continue;
@@ -811,7 +812,7 @@ const StudentListView: React.FC = () => {
                   const currentEnrollments = cls["Student Enrollments"] || {};
                   const updatedEnrollments = {
                     ...currentEnrollments,
-                    [newStudent.id]: { enrollmentDate: today }
+                    [newStudent.id]: { enrollmentDate: dateToUse }
                   };
                   const url = `${DATABASE_URL_BASE}/datasheet/Lớp_học/${classId}.json`;
                   await fetch(url, {
@@ -831,6 +832,7 @@ const StudentListView: React.FC = () => {
                 const classesArray = Object.entries(clsData).map(([id, cls]: [string, any]) => ({ id, ...cls }));
                 setClasses(classesArray);
               }
+              message.success(`Đã thêm học sinh vào ${selectedClassIds.length} lớp (từ ngày ${dateToUse})`);
             } catch (err) {
               console.error("Error updating class membership for new student:", err);
             }
@@ -997,11 +999,21 @@ const StudentListView: React.FC = () => {
             const currentIds = Array.isArray(cls["Student IDs"]) ? cls["Student IDs"] : [];
             if (!currentIds.includes(studentId)) {
               const updatedIds = [...currentIds, studentId];
+              // Use provided enrollment date or default to today
+              const dateToUse = enrollmentDate || new Date().toISOString().split('T')[0];
+              const currentEnrollments = cls["Student Enrollments"] || {};
+              const updatedEnrollments = {
+                ...currentEnrollments,
+                [studentId]: { enrollmentDate: dateToUse }
+              };
               const url2 = `${DATABASE_URL_BASE}/datasheet/Lớp_học/${classId}.json`;
               await fetch(url2, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ "Student IDs": updatedIds }),
+                body: JSON.stringify({ 
+                  "Student IDs": updatedIds,
+                  "Student Enrollments": updatedEnrollments
+                }),
               });
             }
           }
@@ -3282,7 +3294,11 @@ const StudentListView: React.FC = () => {
               if (editingStudent?.id) {
                 studentData.id = editingStudent.id;
               }
-              await handleSaveStudent(studentData, values.registeredSubjects || []);
+              // Get enrollment date from form (format: YYYY-MM-DD)
+              const enrollmentDateStr = values.enrollmentDate 
+                ? dayjs(values.enrollmentDate).format('YYYY-MM-DD')
+                : undefined;
+              await handleSaveStudent(studentData, values.registeredSubjects || [], enrollmentDateStr);
             }}
             layout="vertical"
             style={{ padding: "24px" }}
@@ -3355,6 +3371,19 @@ const StudentListView: React.FC = () => {
                     style={{ width: "100%" }}
                     optionFilterProp="label"
                     allowClear
+                  />
+                </Form.Item>
+              </Col>
+              <Col span={12}>
+                <Form.Item
+                  label="Ngày đăng ký lớp"
+                  name="enrollmentDate"
+                  extra="Ngày học sinh bắt đầu tham gia các lớp mới được chọn"
+                >
+                  <DatePicker
+                    format="DD/MM/YYYY"
+                    style={{ width: "100%" }}
+                    placeholder="Chọn ngày đăng ký"
                   />
                 </Form.Item>
               </Col>
