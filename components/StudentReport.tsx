@@ -497,53 +497,28 @@ const StudentReport = ({
         scoresByDate[dateKey].push({ testName: s.testName, score: s.score });
       });
 
-      // 1. BẢNG ĐIỂM
+      // 1. BẢNG ĐIỂM - Chỉ hiển thị những ngày có điểm
       let scoreTableRows = "";
-      sortedSessions.forEach((session) => {
-        const studentRecord = session["Điểm danh"]?.find(
-          (r) => r["Student ID"] === student.id
-        );
-        
-        if (studentRecord) {
-          const date = dayjs(session["Ngày"]).format("DD/MM");
-          const attendance = studentRecord["Có mặt"] 
-            ? (studentRecord["Đi muộn"] ? "Muộn" : "✓")
-            : (studentRecord["Vắng có phép"] ? "P" : "✗");
-          const attendanceColor = studentRecord["Có mặt"] 
-            ? (studentRecord["Đi muộn"] ? "#fa8c16" : "#52c41a")
-            : (studentRecord["Vắng có phép"] ? "#1890ff" : "#f5222d");
-          const homeworkPercent = studentRecord["% Hoàn thành BTVN"] ?? "-";
-          const bonusScore = studentRecord["Điểm thưởng"] ?? "-";
-          const completed = studentRecord["Bài tập hoàn thành"];
-          const total = session["Bài tập"]?.["Tổng số bài"];
-          const homework = (completed !== undefined && total) ? `${completed}/${total}` : "-";
-          const note = studentRecord["Ghi chú"] || "-";
-
-          // Get all scores for this date from Điểm_tự_nhập
-          const dateScores = scoresByDate[date] || [];
-          const testNamesStr = dateScores.length > 0 
-            ? dateScores.map(s => s.testName).join(", ")
-            : "-";
-          const scoresStr = dateScores.length > 0 
-            ? dateScores.map(s => s.score).join(", ")
-            : "-";
+      Object.entries(scoresByDate)
+        .sort((a, b) => {
+          const dateA = dayjs(a[0], "DD/MM");
+          const dateB = dayjs(b[0], "DD/MM");
+          return dateA.isBefore(dateB) ? -1 : 1;
+        })
+        .forEach(([date, dateScores]) => {
+          const testNamesStr = dateScores.map(s => s.testName).join(", ");
+          const scoresStr = dateScores.map(s => s.score).join(", ");
 
           scoreTableRows += `
             <tr>
               <td style="text-align: center;">${date}</td>
-              <td style="text-align: center; color: ${attendanceColor}; font-weight: bold;">${attendance}</td>
-              <td style="text-align: center;">${homeworkPercent}</td>
               <td style="text-align: left; font-size: 11px;">${testNamesStr}</td>
               <td style="text-align: center; font-weight: bold;">${scoresStr}</td>
-              <td style="text-align: center;">${bonusScore}</td>
-              <td style="text-align: center;">${homework}</td>
-              <td style="text-align: left; font-size: 10px;">${note}</td>
             </tr>
           `;
-        }
-      });
+        });
 
-      // 2. LỊCH SỬ HỌC TẬP CHI TIẾT cho môn này
+      // 2. LỊCH SỬ HỌC TẬP CHI TIẾT cho môn này (chuyên cần, không có điểm)
       let historyTableRows = "";
       sortedSessions.forEach((session) => {
         const studentRecord = session["Điểm danh"]?.find(
@@ -551,21 +526,11 @@ const StudentReport = ({
         );
         if (studentRecord) {
           const dateFormatted = dayjs(session["Ngày"]).format("DD/MM/YYYY");
-          const dateShort = dayjs(session["Ngày"]).format("DD/MM");
           const className = session["Tên lớp"] || "-";
           const timeRange = `${session["Giờ bắt đầu"]} - ${session["Giờ kết thúc"]}`;
           const statusText = getStatusText(studentRecord);
           const statusColor = getStatusColor(studentRecord);
           const note = studentRecord["Ghi chú"] || "-";
-
-          // Get scores from Điểm_tự_nhập for this date
-          const dateScores = scoresByDate[dateShort] || [];
-          const testNamesStr = dateScores.length > 0 
-            ? dateScores.map(s => s.testName).join(", ")
-            : "-";
-          const scoresStr = dateScores.length > 0 
-            ? dateScores.map(s => s.score).join(", ")
-            : "-";
 
           historyTableRows += `
             <tr>
@@ -573,8 +538,6 @@ const StudentReport = ({
               <td style="text-align: left;">${className}</td>
               <td style="text-align: center;">${timeRange}</td>
               <td style="text-align: center; color: ${statusColor}; font-weight: 500;">${statusText}</td>
-              <td style="text-align: center; font-weight: bold;">${scoresStr}</td>
-              <td style="text-align: left; font-size: 11px;">${testNamesStr}</td>
               <td style="text-align: left; font-size: 10px;">${note}</td>
             </tr>
           `;
@@ -594,18 +557,13 @@ const StudentReport = ({
             <table class="score-table">
               <thead>
                 <tr>
-                  <th style="width: 50px;">Ngày</th>
-                  <th style="width: 60px;">Chuyên cần</th>
-                  <th style="width: 55px;">% BTVN</th>
-                  <th style="width: 110px;">Tên bài KT</th>
-                  <th style="width: 45px;">Điểm</th>
-                  <th style="width: 60px;">Điểm thưởng</th>
-                  <th style="width: 55px;">Bài tập</th>
-                  <th>Ghi chú</th>
+                  <th style="width: 80px;">Ngày</th>
+                  <th style="width: auto;">Tên bài kiểm tra</th>
+                  <th style="width: 80px;">Điểm</th>
                 </tr>
               </thead>
               <tbody>
-                ${scoreTableRows || '<tr><td colspan="8" style="text-align: center; color: #999;">Không có dữ liệu</td></tr>'}
+                ${scoreTableRows || '<tr><td colspan="3" style="text-align: center; color: #999;">Không có dữ liệu</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -627,8 +585,6 @@ const StudentReport = ({
                   <th style="width: 150px;">Lớp học</th>
                   <th style="width: 80px;">Giờ học</th>
                   <th style="width: 80px;">Trạng thái</th>
-                  <th style="width: 50px;">Điểm</th>
-                  <th style="width: 120px;">Bài kiểm tra</th>
                   <th>Ghi chú</th>
                 </tr>
               </thead>
@@ -958,53 +914,28 @@ const StudentReport = ({
         scoresByDate[dateKey].push({ testName: s.testName, score: s.score });
       });
 
-      // 1. BẢNG ĐIỂM
+      // 1. BẢNG ĐIỂM - Chỉ hiển thị những ngày có điểm
       let scoreTableRows = "";
-      sortedSessions.forEach((session) => {
-        const studentRecord = session["Điểm danh"]?.find(
-          (r) => r["Student ID"] === student.id
-        );
-        
-        if (studentRecord) {
-          const date = dayjs(session["Ngày"]).format("DD/MM");
-          const attendance = studentRecord["Có mặt"] 
-            ? (studentRecord["Đi muộn"] ? "Muộn" : "✓")
-            : (studentRecord["Vắng có phép"] ? "P" : "✗");
-          const attendanceColor = studentRecord["Có mặt"] 
-            ? (studentRecord["Đi muộn"] ? "#fa8c16" : "#52c41a")
-            : (studentRecord["Vắng có phép"] ? "#1890ff" : "#f5222d");
-          const homeworkPercent = studentRecord["% Hoàn thành BTVN"] ?? "-";
-          const bonusScore = studentRecord["Điểm thưởng"] ?? "-";
-          const completed = studentRecord["Bài tập hoàn thành"];
-          const total = session["Bài tập"]?.["Tổng số bài"];
-          const homework = (completed !== undefined && total) ? `${completed}/${total}` : "-";
-          const note = studentRecord["Ghi chú"] || "-";
-
-          // Get scores from Điểm_tự_nhập for this date
-          const dateScores = scoresByDate[date] || [];
-          const testNamesStr = dateScores.length > 0 
-            ? dateScores.map(s => s.testName).join(", ")
-            : "-";
-          const scoresStr = dateScores.length > 0 
-            ? dateScores.map(s => s.score).join(", ")
-            : "-";
+      Object.entries(scoresByDate)
+        .sort((a, b) => {
+          const dateA = dayjs(a[0], "DD/MM");
+          const dateB = dayjs(b[0], "DD/MM");
+          return dateA.isBefore(dateB) ? -1 : 1;
+        })
+        .forEach(([date, dateScores]) => {
+          const testNamesStr = dateScores.map(s => s.testName).join(", ");
+          const scoresStr = dateScores.map(s => s.score).join(", ");
 
           scoreTableRows += `
             <tr>
               <td style="text-align: center;">${date}</td>
-              <td style="text-align: center; color: ${attendanceColor}; font-weight: bold;">${attendance}</td>
-              <td style="text-align: center;">${homeworkPercent}</td>
               <td style="text-align: left; font-size: 11px;">${testNamesStr}</td>
               <td style="text-align: center; font-weight: bold;">${scoresStr}</td>
-              <td style="text-align: center;">${bonusScore}</td>
-              <td style="text-align: center;">${homework}</td>
-              <td style="text-align: left; font-size: 10px;">${note}</td>
             </tr>
           `;
-        }
-      });
+        });
 
-      // 2. LỊCH SỬ HỌC TẬP cho môn này
+      // 2. LỊCH SỬ HỌC TẬP cho môn này (chuyên cần, không có điểm)
       let historyTableRows = "";
       sortedSessions.forEach((session) => {
         const studentRecord = session["Điểm danh"]?.find(
@@ -1012,21 +943,11 @@ const StudentReport = ({
         );
         if (studentRecord) {
           const dateFormatted = dayjs(session["Ngày"]).format("DD/MM/YYYY");
-          const dateShort = dayjs(session["Ngày"]).format("DD/MM");
           const className = session["Tên lớp"] || "-";
           const timeRange = `${session["Giờ bắt đầu"]} - ${session["Giờ kết thúc"]}`;
           const statusText = getStatusText(studentRecord);
           const statusColor = getStatusColor(studentRecord);
           const note = studentRecord["Ghi chú"] || "-";
-
-          // Get scores from Điểm_tự_nhập for this date
-          const dateScores = scoresByDate[dateShort] || [];
-          const testNamesStr = dateScores.length > 0 
-            ? dateScores.map(s => s.testName).join(", ")
-            : "-";
-          const scoresStr = dateScores.length > 0 
-            ? dateScores.map(s => s.score).join(", ")
-            : "-";
 
           historyTableRows += `
             <tr>
@@ -1034,8 +955,6 @@ const StudentReport = ({
               <td style="text-align: left;">${className}</td>
               <td style="text-align: center;">${timeRange}</td>
               <td style="text-align: center; color: ${statusColor}; font-weight: 500;">${statusText}</td>
-              <td style="text-align: center; font-weight: bold;">${scoresStr}</td>
-              <td style="text-align: left; font-size: 11px;">${testNamesStr}</td>
               <td style="text-align: left; font-size: 10px;">${note}</td>
             </tr>
           `;
@@ -1055,18 +974,13 @@ const StudentReport = ({
             <table class="score-table">
               <thead>
                 <tr>
-                  <th style="width: 50px;">Ngày</th>
-                  <th style="width: 60px;">Chuyên cần</th>
-                  <th style="width: 55px;">% BTVN</th>
-                  <th style="width: 110px;">Tên bài KT</th>
-                  <th style="width: 45px;">Điểm</th>
-                  <th style="width: 60px;">Điểm thưởng</th>
-                  <th style="width: 55px;">Bài tập</th>
-                  <th>Ghi chú</th>
+                  <th style="width: 80px;">Ngày</th>
+                  <th style="width: auto;">Tên bài kiểm tra</th>
+                  <th style="width: 80px;">Điểm</th>
                 </tr>
               </thead>
               <tbody>
-                ${scoreTableRows || '<tr><td colspan="8" style="text-align: center; color: #999;">Chưa có dữ liệu</td></tr>'}
+                ${scoreTableRows || '<tr><td colspan="3" style="text-align: center; color: #999;">Chưa có dữ liệu</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -1087,13 +1001,11 @@ const StudentReport = ({
                   <th>Lớp</th>
                   <th style="width: 90px;">Thời gian</th>
                   <th style="width: 90px;">Chuyên cần</th>
-                  <th style="width: 50px;">Điểm</th>
-                  <th style="width: 110px;">Tên bài KT</th>
                   <th>Ghi chú</th>
                 </tr>
               </thead>
               <tbody>
-                ${historyTableRows || '<tr><td colspan="7" style="text-align: center; color: #999;">Chưa có dữ liệu</td></tr>'}
+                ${historyTableRows || '<tr><td colspan="5" style="text-align: center; color: #999;">Chưa có dữ liệu</td></tr>'}
               </tbody>
             </table>
           </div>
@@ -2062,61 +1974,38 @@ const StudentReport = ({
                           <thead>
                             <tr style={{ background: "#f0f0f0" }}>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Ngày</th>
-                              <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Chuyên cần</th>
-                              <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>% BTVN</th>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Tên bài kiểm tra</th>
                               <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Điểm</th>
-                              <th style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>Điểm thưởng</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {sortedSessions.map((session) => {
-                              const studentRecord = session["Điểm danh"]?.find(
-                                (r) => r["Student ID"] === student.id
-                              );
-                              if (!studentRecord) return null;
-
-                              const attendance = studentRecord["Có mặt"]
-                                ? studentRecord["Đi muộn"]
-                                  ? "Đi muộn"
-                                  : "Có mặt"
-                                : studentRecord["Vắng có phép"]
-                                ? "Vắng có phép"
-                                : "Vắng";
-
-                              const dateFormatted = dayjs(session["Ngày"]).format("DD/MM/YYYY");
-                              // Get all scores for this date from Điểm_tự_nhập
-                              const dateScores = scoresByDate[dateFormatted] || [];
-                              const testNamesStr = dateScores.length > 0 
-                                ? dateScores.map(s => s.testName).join(", ")
-                                : "-";
-                              const scoresStr = dateScores.length > 0 
-                                ? dateScores.map(s => s.score).join(", ")
-                                : "-";
-
-                              return (
-                                <tr key={session.id}>
-                                  <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
-                                    {dateFormatted}
-                                  </td>
-                                  <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
-                                    {attendance}
-                                  </td>
-                                  <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
-                                    {studentRecord["% Hoàn thành BTVN"] ?? "-"}
-                                  </td>
-                                  <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
-                                    {testNamesStr}
-                                  </td>
-                                  <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center", fontWeight: "bold" }}>
-                                    {scoresStr}
-                                  </td>
-                                  <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
-                                    {studentRecord["Điểm thưởng"] ?? "-"}
-                                  </td>
-                                </tr>
-                              );
-                            })}
+                            {Object.keys(scoresByDate).length === 0 ? (
+                              <tr>
+                                <td colSpan={3} style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center", color: "#999" }}>
+                                  Chưa có điểm
+                                </td>
+                              </tr>
+                            ) : (
+                              Object.entries(scoresByDate)
+                                .sort((a, b) => {
+                                  const dateA = dayjs(a[0], "DD/MM/YYYY");
+                                  const dateB = dayjs(b[0], "DD/MM/YYYY");
+                                  return dateA.isBefore(dateB) ? -1 : 1;
+                                })
+                                .map(([dateFormatted, dateScores]) => (
+                                  <tr key={dateFormatted}>
+                                    <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center" }}>
+                                      {dateFormatted}
+                                    </td>
+                                    <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "left" }}>
+                                      {dateScores.map(s => s.testName).join(", ")}
+                                    </td>
+                                    <td style={{ border: "1px solid #d9d9d9", padding: "8px", textAlign: "center", fontWeight: "bold" }}>
+                                      {dateScores.map(s => s.score).join(", ")}
+                                    </td>
+                                  </tr>
+                                ))
+                            )}
                           </tbody>
                         </table>
                       </div>
