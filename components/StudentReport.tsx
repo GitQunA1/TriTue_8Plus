@@ -242,21 +242,30 @@ const StudentReport = ({
   }, [open, student?.id]);
 
   // Get comments for a specific class/subject from monthly comments
+  // Hỗ trợ trường hợp học sinh học nhiều môn từ nhiều giáo viên khác nhau
   const getClassComment = (className: string): string => {
     if (!selectedMonth) return "";
     const monthStr = selectedMonth.format("YYYY-MM");
     
-    const monthComment = monthlyComments.find(
-      (c) => c.month === monthStr && c.status === "approved"
-    );
+    // Tìm trong TẤT CẢ các MonthlyComment đã duyệt trong tháng này
+    // (có thể từ nhiều giáo viên khác nhau)
+    for (const monthComment of monthlyComments) {
+      if (monthComment.month !== monthStr || monthComment.status !== "approved") {
+        continue;
+      }
+      
+      if (!monthComment?.stats?.classStats) continue;
+      
+      const classStats = monthComment.stats.classStats.find(
+        (cs) => cs.className === className || cs.subject === className
+      );
+      
+      if (classStats?.comment) {
+        return classStats.comment;
+      }
+    }
     
-    if (!monthComment?.stats?.classStats) return "";
-    
-    const classStats = monthComment.stats.classStats.find(
-      (cs) => cs.className === className || cs.subject === className
-    );
-    
-    return classStats?.comment || "";
+    return "";
   };
 
   // Reset state when modal closes

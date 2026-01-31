@@ -30,7 +30,6 @@ import {
   BookOutlined,
   DownOutlined,
   WarningOutlined,
-  BugOutlined,
   EyeOutlined,
 } from "@ant-design/icons";
 import { ref, onValue, update, push } from "firebase/database";
@@ -91,7 +90,6 @@ const TeacherMonthlyReport = () => {
   const [generatingProgress, setGeneratingProgress] = useState(0);
   const [teacherData, setTeacherData] = useState<any>(null);
   const [expandedRows, setExpandedRows] = useState<string[]>([]);
-  const [testMode, setTestMode] = useState(false); // Chế độ test - bỏ qua giới hạn tháng
 
   // Modal state
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -103,13 +101,8 @@ const TeacherMonthlyReport = () => {
   const [editingScores, setEditingScores] = useState<{ [columnKey: string]: number | null }>({});
   const [customScoresData, setCustomScoresData] = useState<{ [classId: string]: any }>({});
 
-  // Kiểm tra xem tháng đã kết thúc chưa (bỏ qua nếu đang ở chế độ test)
-  const isMonthEnded = useMemo(() => {
-    if (testMode) return true; // Chế độ test - luôn cho phép
-    const endOfSelectedMonth = selectedMonth.endOf('month');
-    const today = dayjs();
-    return endOfSelectedMonth.isBefore(today, 'day');
-  }, [selectedMonth, testMode]);
+  // Luôn cho phép tạo báo cáo - nếu sai admin sẽ hủy duyệt
+  const isMonthEnded = true;
 
   // Load teacher data
   useEffect(() => {
@@ -150,6 +143,7 @@ const TeacherMonthlyReport = () => {
             ...(value as Omit<Class, "id">),
           }))
           .filter((c) => c["Teacher ID"] === actualTeacherId && c["Trạng thái"] === "active");
+        
         setClasses(classList);
       }
     });
@@ -232,14 +226,36 @@ const TeacherMonthlyReport = () => {
     return () => unsubscribe();
   }, [classes]);
 
-  // Lấy danh sách học sinh unique từ tất cả các lớp của teacher
+  // Lấy danh sách học sinh unique từ tất cả các lớp của teacher TRONG THÁNG ĐÃ CHỌN
+  // Kết hợp cả 2 nguồn: Student IDs trong lớp + học sinh đã điểm danh trong sessions
   const uniqueStudentIds = useMemo(() => {
     const studentIdSet = new Set<string>();
+    const classIds = classes.map(c => c.id);
+    const monthStr = selectedMonth?.format("YYYY-MM") || "";
+    
+    // Nguồn 1: Từ Student IDs của từng lớp
     classes.forEach((c) => {
       c["Student IDs"]?.forEach((id) => studentIdSet.add(id));
     });
+    
+    // Nguồn 2: Từ điểm danh sessions (học sinh đã được điểm danh thực tế) TRONG THÁNG ĐÃ CHỌN
+    // Điều này bao gồm cả học sinh mới thêm vào lớp và đã được điểm danh
+    sessions.forEach((session) => {
+      if (classIds.includes(session["Class ID"])) {
+        // Chỉ xét sessions trong tháng đã chọn
+        const sessionMonth = dayjs(session["Ngày"]).format("YYYY-MM");
+        if (sessionMonth === monthStr) {
+          session["Điểm danh"]?.forEach((record) => {
+            if (record["Student ID"]) {
+              studentIdSet.add(record["Student ID"]);
+            }
+          });
+        }
+      }
+    });
+    
     return Array.from(studentIdSet);
-  }, [classes]);
+  }, [classes, sessions, selectedMonth]);
 
   // Helper: Get custom scores for a student in a class for a specific month
   const getCustomScoresForClass = (studentId: string, classId: string, monthStr: string): number[] => {
@@ -283,9 +299,18 @@ const TeacherMonthlyReport = () => {
       const studentCode = student?.["Mã học sinh"];
 
       // Tìm tất cả các lớp mà học sinh này đang học với teacher này
-      const studentClasses = classes.filter((c) =>
-        c["Student IDs"]?.includes(studentId)
-      );
+      // Kết hợp cả 2 nguồn: Student IDs + đã được điểm danh
+      const studentClasses = classes.filter((c) => {
+        // Nguồn 1: Có trong Student IDs của lớp
+        if (c["Student IDs"]?.includes(studentId)) return true;
+        
+        // Nguồn 2: Đã được điểm danh trong sessions của lớp này
+        const hasAttendance = sessions.some(
+          (s) => s["Class ID"] === c.id && 
+                 s["Điểm danh"]?.some((r) => r["Student ID"] === studentId)
+        );
+        return hasAttendance;
+      });
 
       // Tính thống kê từng lớp
       const classStats: ClassStats[] = [];
@@ -373,9 +398,10 @@ const TeacherMonthlyReport = () => {
         ? allScores.reduce((a, b) => a + b, 0) / allScores.length
         : 0;
 
-      // Find existing comment for this student & month
+      // Find existing comment for this student & month & THIS TEACHER
+      // Mỗi giáo viên có báo cáo riêng cho học sinh
       const existingComment = existingComments.find(
-        (c) => c.studentId === studentId && c.month === monthStr
+        (c) => c.studentId === studentId && c.month === monthStr && c.teacherId === actualTeacherId
       );
 
       // Xác định status đúng type
@@ -1212,28 +1238,6 @@ const TeacherMonthlyReport = () => {
   return (
     <WrapperContent title="Báo cáo học sinh theo tháng">
       <Card>
-        {/* Test Mode Toggle - chỉ hiển thị trong dev */}
-        {import.meta.env.DEV && (
-          <Alert
-            type="info"
-            showIcon
-            icon={<BugOutlined />}
-            message={
-              <Space>
-                <span>Chế độ Test (DEV):</span>
-                <Switch
-                  checked={testMode}
-                  onChange={setTestMode}
-                  checkedChildren="BẬT"
-                  unCheckedChildren="TẮT"
-                />
-                {testMode && <Tag color="orange">Đang bỏ qua giới hạn tháng!</Tag>}
-              </Space>
-            }
-            style={{ marginBottom: 16 }}
-          />
-        )}
-
         {/* Filters */}
         <Row gutter={16} style={{ marginBottom: 24 }}>
           <Col xs={24} sm={12} md={8}>
@@ -1244,18 +1248,17 @@ const TeacherMonthlyReport = () => {
               value={selectedMonth}
               onChange={(date) => date && setSelectedMonth(date)}
               format="MM/YYYY"
-              disabledDate={testMode ? undefined : (current) => current && current.isAfter(dayjs().subtract(1, 'month').endOf('month'))}
             />
           </Col>
           <Col xs={24} md={16} style={{ display: "flex", alignItems: "flex-end" }}>
             <Space wrap>
-              <Tooltip title={!isMonthEnded ? "Chỉ có thể tạo báo cáo cho tháng đã kết thúc" : editableCount === 0 ? "Không có báo cáo nào có thể tạo AI" : ""}>
+              <Tooltip title={editableCount === 0 ? "Không có báo cáo nào có thể tạo AI" : ""}>
                 <Button
                   type="primary"
                   icon={<RobotOutlined />}
                   onClick={handleGenerateAIComments}
                   loading={generatingAI}
-                  disabled={reportData.length === 0 || editableCount === 0 || !isMonthEnded}
+                  disabled={reportData.length === 0 || editableCount === 0}
                 >
                   Tạo nhận xét AI ({editableCount} HS)
                 </Button>
@@ -1263,18 +1266,6 @@ const TeacherMonthlyReport = () => {
             </Space>
           </Col>
         </Row>
-
-        {/* Warning nếu tháng chưa kết thúc */}
-        {!isMonthEnded && !testMode && (
-          <Alert
-            type="warning"
-            showIcon
-            icon={<WarningOutlined />}
-            message="Tháng chưa kết thúc"
-            description={`Bạn chỉ có thể tạo báo cáo cho tháng đã kết thúc. Tháng ${selectedMonth.format("MM/YYYY")} sẽ kết thúc vào ngày ${selectedMonth.endOf('month').format("DD/MM/YYYY")}.`}
-            style={{ marginBottom: 16 }}
-          />
-        )}
 
         {/* Warning for locked reports */}
         {hasLockedReports && (

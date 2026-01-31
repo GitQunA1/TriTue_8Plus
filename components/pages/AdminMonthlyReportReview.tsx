@@ -52,6 +52,14 @@ interface Student {
   "Địa chỉ"?: string;
 }
 
+// Extended interface để lưu báo cáo đã merge từ nhiều GV
+interface MergedReport extends MonthlyComment {
+  mergedIds: string[]; // Danh sách các comment IDs đã merge
+  teacherNames: string[]; // Danh sách tên các GV đã gửi báo cáo
+  allApproved: boolean; // True nếu tất cả báo cáo đã được duyệt
+  pendingCount: number; // Số báo cáo đang chờ duyệt
+}
+
 const AdminMonthlyReportReview = () => {
   const { userProfile } = useAuth();
   const [classes, setClasses] = useState<Class[]>([]);
@@ -66,15 +74,15 @@ const AdminMonthlyReportReview = () => {
 
   // Print modal
   const [printModalOpen, setPrintModalOpen] = useState(false);
-  const [selectedComment, setSelectedComment] = useState<MonthlyComment | null>(null);
+  const [selectedComment, setSelectedComment] = useState<MergedReport | null>(null);
 
   // Preview modal
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
-  const [previewComment, setPreviewComment] = useState<MonthlyComment | null>(null);
+  const [previewComment, setPreviewComment] = useState<MergedReport | null>(null);
 
   // Reject modal
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
-  const [rejectComment, setRejectComment] = useState<MonthlyComment | null>(null);
+  const [rejectComment, setRejectComment] = useState<MergedReport | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
   // Load classes
@@ -191,7 +199,7 @@ const AdminMonthlyReportReview = () => {
   };
 
   // Filter và MERGE comments theo học sinh - gộp nhiều báo cáo của cùng 1 học sinh thành 1
-  const filteredComments = useMemo(() => {
+  const filteredComments = useMemo((): MergedReport[] => {
     const monthStr = selectedMonth.format("YYYY-MM");
 
     // Lọc các comments trong tháng đã submitted hoặc approved
@@ -199,15 +207,15 @@ const AdminMonthlyReportReview = () => {
     filtered = filtered.filter((c) => c.status === "submitted" || c.status === "approved");
 
     // MERGE: Gộp các báo cáo của cùng 1 học sinh trong cùng 1 tháng
-    const studentReportMap = new Map<string, MonthlyComment>();
+    const studentReportMap = new Map<string, MergedReport>();
 
     filtered.forEach((comment) => {
       const key = `${comment.studentId}_${comment.month}`;
       const existing = studentReportMap.get(key);
 
       if (!existing) {
-        // Clone comment để không modify original
-        studentReportMap.set(key, {
+        // Tạo MergedReport mới
+        const mergedReport: MergedReport = {
           ...comment,
           classIds: [...(comment.classIds || [])],
           classNames: [...(comment.classNames || [])],
@@ -215,8 +223,30 @@ const AdminMonthlyReportReview = () => {
             ...comment.stats,
             classStats: [...(comment.stats?.classStats || [])],
           },
-        });
+          // Extended fields
+          mergedIds: [comment.id],
+          teacherNames: [comment.teacherName],
+          allApproved: comment.status === 'approved',
+          pendingCount: comment.status === 'submitted' ? 1 : 0,
+        };
+        studentReportMap.set(key, mergedReport);
       } else {
+        // Thêm ID vào danh sách merged
+        if (!existing.mergedIds.includes(comment.id)) {
+          existing.mergedIds.push(comment.id);
+        }
+        
+        // Thêm tên GV nếu chưa có
+        if (!existing.teacherNames.includes(comment.teacherName)) {
+          existing.teacherNames.push(comment.teacherName);
+        }
+        
+        // Cập nhật pending count
+        if (comment.status === 'submitted') {
+          existing.pendingCount++;
+          existing.allApproved = false;
+        }
+        
         // Merge: thêm các lớp mới vào báo cáo hiện có
         const newClassIds = (comment.classIds || []).filter(
           (id) => !(existing.classIds || []).includes(id)
@@ -285,7 +315,7 @@ const AdminMonthlyReportReview = () => {
       merged = merged.filter(
         (c) =>
           c.studentName.toLowerCase().includes(searchText.toLowerCase()) ||
-          c.teacherName.toLowerCase().includes(searchText.toLowerCase()) ||
+          c.teacherNames.join(", ").toLowerCase().includes(searchText.toLowerCase()) ||
           (c.classNames || []).join(", ").toLowerCase().includes(searchText.toLowerCase())
       );
     }
@@ -322,15 +352,20 @@ const AdminMonthlyReportReview = () => {
     };
   }, [allComments, selectedMonth]);
 
-  // Approve single comment
-  const handleApproveSingle = async (comment: MonthlyComment) => {
+  // Approve TẤT CẢ báo cáo của 1 học sinh (từ nhiều GV)
+  const handleApproveSingle = async (comment: MergedReport) => {
     try {
-      await update(ref(database, `datasheet/Nhận_xét_tháng/${comment.id}`), {
-        status: "approved",
-        approvedAt: new Date().toISOString(),
-        approvedBy: userProfile?.email || "",
-      });
-      message.success("Đã duyệt!");
+      // Duyệt tất cả các báo cáo đã merge
+      const approvePromises = comment.mergedIds.map((id) =>
+        update(ref(database, `datasheet/Nhận_xét_tháng/${id}`), {
+          status: "approved",
+          approvedAt: new Date().toISOString(),
+          approvedBy: userProfile?.email || "",
+        })
+      );
+      
+      await Promise.all(approvePromises);
+      message.success(`Đã duyệt ${comment.mergedIds.length} báo cáo cho học sinh ${comment.studentName}!`);
     } catch (error) {
       console.error("Error approving:", error);
       message.error("Có lỗi khi duyệt");
@@ -338,13 +373,13 @@ const AdminMonthlyReportReview = () => {
   };
 
   // Open reject modal
-  const openRejectModal = (comment: MonthlyComment) => {
+  const openRejectModal = (comment: MergedReport) => {
     setRejectComment(comment);
     setRejectReason("");
     setRejectModalOpen(true);
   };
 
-  // Reject single comment with reason
+  // Reject TẤT CẢ báo cáo của 1 học sinh with reason
   const handleRejectSingle = async () => {
     if (!rejectComment) return;
 
@@ -354,15 +389,21 @@ const AdminMonthlyReportReview = () => {
     }
 
     try {
-      await update(ref(database, `datasheet/Nhận_xét_tháng/${rejectComment.id}`), {
-        status: "draft",
-        rejectedAt: new Date().toISOString(),
-        rejectedBy: userProfile?.email || "",
-        rejectedReason: rejectReason,
-        submittedAt: null,
-        submittedBy: null,
-      });
-      message.success("Đã từ chối! Giáo viên có thể chỉnh sửa lại.");
+      // Từ chối tất cả các báo cáo đã merge
+      const mergedReport = rejectComment as MergedReport;
+      const rejectPromises = mergedReport.mergedIds.map((id) =>
+        update(ref(database, `datasheet/Nhận_xét_tháng/${id}`), {
+          status: "draft",
+          rejectedAt: new Date().toISOString(),
+          rejectedBy: userProfile?.email || "",
+          rejectedReason: rejectReason,
+          submittedAt: null,
+          submittedBy: null,
+        })
+      );
+      
+      await Promise.all(rejectPromises);
+      message.success(`Đã từ chối ${mergedReport.mergedIds.length} báo cáo! Giáo viên có thể chỉnh sửa lại.`);
       setRejectModalOpen(false);
       setRejectComment(null);
       setRejectReason("");
@@ -372,7 +413,7 @@ const AdminMonthlyReportReview = () => {
     }
   };
 
-  // Approve all
+  // Approve all - duyệt tất cả báo cáo của tất cả học sinh
   const handleApproveAll = async () => {
     const toApprove = filteredComments.filter((c) => c.status === "submitted");
     if (toApprove.length === 0) {
@@ -382,35 +423,44 @@ const AdminMonthlyReportReview = () => {
 
     try {
       const updates: { [key: string]: any } = {};
+      // Duyệt tất cả các báo cáo đã merge (từ nhiều GV)
       toApprove.forEach((comment) => {
-        updates[`datasheet/Nhận_xét_tháng/${comment.id}/status`] = "approved";
-        updates[`datasheet/Nhận_xét_tháng/${comment.id}/approvedAt`] = new Date().toISOString();
-        updates[`datasheet/Nhận_xét_tháng/${comment.id}/approvedBy`] = userProfile?.email || "";
+        comment.mergedIds.forEach((id) => {
+          updates[`datasheet/Nhận_xét_tháng/${id}/status`] = "approved";
+          updates[`datasheet/Nhận_xét_tháng/${id}/approvedAt`] = new Date().toISOString();
+          updates[`datasheet/Nhận_xét_tháng/${id}/approvedBy`] = userProfile?.email || "";
+        });
       });
 
       await update(ref(database), updates);
-      message.success(`Đã duyệt ${toApprove.length} báo cáo!`);
+      const totalReports = toApprove.reduce((sum, c) => sum + c.mergedIds.length, 0);
+      message.success(`Đã duyệt ${totalReports} báo cáo cho ${toApprove.length} học sinh!`);
     } catch (error) {
       console.error("Error approving all:", error);
       message.error("Có lỗi khi duyệt");
     }
   };
 
-  // Xóa duyệt - Reset báo cáo đã approved về trạng thái draft để giáo viên sửa lại
-  const handleRevokeApproval = async (comment: MonthlyComment) => {
+  // Xóa duyệt - Reset TẤT CẢ báo cáo đã approved về trạng thái draft để giáo viên sửa lại
+  const handleRevokeApproval = async (comment: MergedReport) => {
     try {
-      await update(ref(database, `datasheet/Nhận_xét_tháng/${comment.id}`), {
-        status: "draft",
-        revokedAt: new Date().toISOString(),
-        revokedBy: userProfile?.email || "",
-        // Clear approval info
-        approvedAt: null,
-        approvedBy: null,
-        // Clear submission info to allow re-edit
-        submittedAt: null,
-        submittedBy: null,
-      });
-      message.success("Đã xóa duyệt! Giáo viên có thể chỉnh sửa lại nhận xét.");
+      // Xóa duyệt tất cả các báo cáo đã merge
+      const revokePromises = comment.mergedIds.map((id) =>
+        update(ref(database, `datasheet/Nhận_xét_tháng/${id}`), {
+          status: "draft",
+          revokedAt: new Date().toISOString(),
+          revokedBy: userProfile?.email || "",
+          // Clear approval info
+          approvedAt: null,
+          approvedBy: null,
+          // Clear submission info to allow re-edit
+          submittedAt: null,
+          submittedBy: null,
+        })
+      );
+      
+      await Promise.all(revokePromises);
+      message.success(`Đã xóa duyệt ${comment.mergedIds.length} báo cáo! Giáo viên có thể chỉnh sửa lại.`);
     } catch (error) {
       console.error("Error revoking approval:", error);
       message.error("Có lỗi khi xóa duyệt");
@@ -418,19 +468,19 @@ const AdminMonthlyReportReview = () => {
   };
 
   // Print
-  const handlePrint = (comment: MonthlyComment) => {
+  const handlePrint = (comment: MergedReport) => {
     setSelectedComment(comment);
     setPrintModalOpen(true);
   };
 
   // Preview
-  const handlePreview = (comment: MonthlyComment) => {
+  const handlePreview = (comment: MergedReport) => {
     setPreviewComment(comment);
     setPreviewModalOpen(true);
   };
 
   // Generate print content - với LỊCH SỬ HỌC TẬP CHI TIẾT giống ảnh mẫu
-  const generatePrintContent = (comment: MonthlyComment) => {
+  const generatePrintContent = (comment: MergedReport) => {
     const monthDisplay = dayjs(comment.month).format("MM/YYYY");
     const monthStr = comment.month;
 
@@ -848,7 +898,7 @@ const AdminMonthlyReportReview = () => {
                       </div>
                     </td>
                   </tr>
-                  <tr><th>Giáo viên</th><td>${comment.teacherName}</td></tr>
+                  <tr><th>Giáo viên</th><td>${comment.teacherNames.join(", ")}</td></tr>
                 </table>
               </div>
 
@@ -1076,16 +1126,37 @@ const AdminMonthlyReportReview = () => {
     },
     {
       title: "Giáo viên",
-      dataIndex: "teacherName",
-      key: "teacherName",
-      width: 130,
+      dataIndex: "teacherNames",
+      key: "teacherNames",
+      width: 150,
+      render: (teacherNames: string[], record: MergedReport) => (
+        <Space direction="vertical" size={0}>
+          {teacherNames.map((name, idx) => (
+            <Tag key={idx} color="blue" style={{ margin: '2px 0' }}>{name}</Tag>
+          ))}
+          {record.pendingCount > 0 && (
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              ({record.mergedIds.length} báo cáo)
+            </Text>
+          )}
+        </Space>
+      ),
     },
     {
       title: "Trạng thái",
       dataIndex: "status",
       key: "status",
       width: 100,
-      render: (status: string) => getStatusTag(status),
+      render: (status: string, record: MergedReport) => (
+        <Space direction="vertical" size={0}>
+          {getStatusTag(status)}
+          {record.pendingCount > 0 && status === 'submitted' && (
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {record.pendingCount} chờ duyệt
+            </Text>
+          )}
+        </Space>
+      ),
     },
     {
       title: "Ngày gửi",
@@ -1098,7 +1169,7 @@ const AdminMonthlyReportReview = () => {
       title: "Thao tác",
       key: "actions",
       width: 200,
-      render: (_: any, record: MonthlyComment) => (
+      render: (_: any, record: MergedReport) => (
         <Space wrap>
           <Button
             size="small"
@@ -1117,10 +1188,10 @@ const AdminMonthlyReportReview = () => {
           {record.status === "submitted" && (
             <>
               <Popconfirm
-                title="Duyệt báo cáo này?"
-                description="Bạn đã xem trước báo cáo chưa?"
+                title={`Duyệt ${record.mergedIds.length} báo cáo?`}
+                description={`Báo cáo từ: ${record.teacherNames.join(", ")}`}
                 onConfirm={() => handleApproveSingle(record)}
-                okText="Duyệt"
+                okText="Duyệt tất cả"
                 cancelText="Hủy"
               >
                 <Button size="small" type="primary" icon={<CheckOutlined />}>
@@ -1139,8 +1210,8 @@ const AdminMonthlyReportReview = () => {
           )}
           {record.status === "approved" && (
             <Popconfirm
-              title="Xóa duyệt báo cáo này?"
-              description="Báo cáo sẽ chuyển về trạng thái nháp để giáo viên có thể chỉnh sửa lại."
+              title={`Xóa duyệt ${record.mergedIds.length} báo cáo?`}
+              description="Tất cả báo cáo sẽ chuyển về trạng thái nháp để giáo viên có thể chỉnh sửa lại."
               onConfirm={() => handleRevokeApproval(record)}
               okText="Xác nhận"
               cancelText="Hủy"
@@ -1161,7 +1232,7 @@ const AdminMonthlyReportReview = () => {
   ];
 
   // Expanded row để xem chi tiết
-  const expandedRowRender = (record: MonthlyComment) => {
+  const expandedRowRender = (record: MergedReport) => {
     const classStats = record.stats?.classStats || [];
     return (
       <Card size="small" style={{ margin: 0 }}>
@@ -1446,7 +1517,11 @@ const AdminMonthlyReportReview = () => {
             </div>
             <div>
               <Text type="secondary">Giáo viên: </Text>
-              <Text>{rejectComment.teacherName}</Text>
+              <Text>{rejectComment.teacherNames.join(", ")}</Text>
+            </div>
+            <div>
+              <Text type="secondary">Số báo cáo: </Text>
+              <Text>{rejectComment.mergedIds.length}</Text>
             </div>
             <div>
               <Text type="secondary">Tháng: </Text>

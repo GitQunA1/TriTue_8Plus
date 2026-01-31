@@ -1003,10 +1003,23 @@ const StudentListView: React.FC = () => {
         // After updating student, update class membership according to selectedClassIds
         try {
           const studentId = studentData.id as string;
-          // previous classes where student was enrolled
-          const previousClassIds = classes.filter((c) => (c["Student IDs"] || []).includes(studentId)).map((c) => c.id);
+          
+          // Fetch fresh classes data from Firebase to get accurate previousClassIds
+          const freshClassesResp = await fetch(`${DATABASE_URL_BASE}/datasheet/Lớp_học.json`);
+          const freshClassesData = await freshClassesResp.json();
+          const freshClasses = freshClassesData 
+            ? Object.entries(freshClassesData).map(([id, cls]: [string, any]) => ({ id, ...cls }))
+            : [];
+          
+          // previous classes where student was enrolled (from fresh data)
+          const previousClassIds = freshClasses
+            .filter((c: any) => (c["Student IDs"] || []).includes(studentId))
+            .map((c: any) => c.id);
+          
+          console.log("📋 Class membership sync:", { studentId, previousClassIds, selectedClassIds });
+          
           const toAdd = selectedClassIds.filter((id) => !previousClassIds.includes(id));
-          const toRemove = previousClassIds.filter((id) => !selectedClassIds.includes(id));
+          const toRemove = previousClassIds.filter((id: string) => !selectedClassIds.includes(id));
           // Classes that remain (already enrolled and still selected) - need to update enrollment date if provided
           const toUpdateEnrollment = selectedClassIds.filter((id) => previousClassIds.includes(id));
 
