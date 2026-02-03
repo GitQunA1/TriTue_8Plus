@@ -102,6 +102,7 @@ interface StudentInvoice {
   totalAmount: number;
   discount: number;
   finalAmount: number;
+  debt?: number; // Custom debt amount (overrides calculated debt)
   status: "paid" | "unpaid";
   sessions: AttendanceSession[];
   invoiceImage?: string; // Base64 image data
@@ -188,6 +189,7 @@ const InvoicePage = () => {
     null
   );
   const [editDiscount, setEditDiscount] = useState<number>(0);
+  const [editDebt, setEditDebt] = useState<number>(0);
   const [editInvoiceModalOpen, setEditInvoiceModalOpen] =
     useState<boolean>(false);
   // State to track individual session prices when editing
@@ -232,6 +234,7 @@ const InvoicePage = () => {
       | {
         status: "paid" | "unpaid";
         discount?: number;
+        debt?: number; // Custom debt amount
         // Full invoice data for paid records
         studentId?: string;
         studentName?: string;
@@ -1106,7 +1109,8 @@ const InvoicePage = () => {
     invoiceId: string,
     sessionPrices: { [sessionId: string]: number },
     discount: number,
-    updatedSessions?: AttendanceSession[]
+    updatedSessions?: AttendanceSession[],
+    debt?: number
   ) => {
     try {
       const currentData = studentInvoiceStatus[invoiceId];
@@ -1145,6 +1149,7 @@ const InvoicePage = () => {
       const updateData = {
         ...(typeof currentData === "object" ? currentData : { status: currentStatus || "unpaid" }),
         discount,
+        debt: debt !== undefined ? debt : (typeof currentData === "object" && currentData.debt !== undefined ? currentData.debt : 0),
         sessions: sessionsToUse, // Update sessions array with new prices
         sessionPrices, // Store custom prices mapping
         totalAmount: newTotalAmount,
@@ -1774,104 +1779,128 @@ const InvoicePage = () => {
     const firstClassInfo = classes.find((c) => c.id === firstClassId);
     const grade = firstClassInfo?.["Khối"] || "";
 
+    // Check if this invoice has a saved debt value in database
+    const invoiceData = studentInvoiceStatus[invoice.id];
+    const savedDebt = typeof invoiceData === "object" && invoiceData.debt !== undefined
+      ? invoiceData.debt
+      : null;
+
     // Calculate previous unpaid months (debt) for this student across ALL months
+    // Only calculate if no saved debt exists
     const debtMap: Record<
       string,
       { month: number; year: number; amount: number }
     > = {};
+    
+    let totalDebt = 0;
+    let debtDetails: { month: number; year: number; amount: number }[] = [];
 
-    // 1) Include persisted invoices from Firebase (studentInvoiceStatus)
-    Object.entries(studentInvoiceStatus).forEach(([key, data]) => {
-      if (!data || typeof data === "string") return;
-      const sid = data.studentId;
-      const m = data.month ?? null;
-      const y = data.year ?? null;
-      if (!sid || m === null || y === null) return;
-      // Only consider invoices for the current student
-      if (sid !== invoice.studentId) return;
-      // Only consider months strictly before the invoice month/year
-      if (y < invoice.year || (y === invoice.year && m < invoice.month)) {
-        const status = data.status || "unpaid";
-        if (status !== "paid") {
-          const amt = data.finalAmount ?? data.totalAmount ?? 0;
-          const mapKey = `${y}-${m}`;
-          debtMap[mapKey] = {
-            month: m,
-            year: y,
-            amount: (debtMap[mapKey]?.amount || 0) + amt,
-          };
-        }
+    if (savedDebt !== null) {
+      // Use saved debt value from database
+      totalDebt = savedDebt;
+      // Create a single entry for display if there's debt
+      if (savedDebt > 0) {
+        debtDetails = [{
+          month: invoice.month - 1 >= 0 ? invoice.month - 1 : 11,
+          year: invoice.month - 1 >= 0 ? invoice.year : invoice.year - 1,
+          amount: savedDebt
+        }];
       }
-    });
-
-    // 2) Derive unpaid amounts from sessions for months that may not have persisted invoice entries
-    sessions.forEach((session) => {
-      if (!session["Ngày"] || !session["Điểm danh"]) return;
-      const sessionDate = new Date(session["Ngày"]);
-      const sMonth = sessionDate.getMonth();
-      const sYear = sessionDate.getFullYear();
-      // only consider months strictly before current invoice month/year
-      if (
-        !(
-          sYear < invoice.year ||
-          (sYear === invoice.year && sMonth < invoice.month)
-        )
-      )
-        return;
-
-      // check if student was present in this session
-      const present =
-        Array.isArray(session["Điểm danh"]) &&
-        session["Điểm danh"].some(
-          (r: any) => r["Student ID"] === invoice.studentId && r["Có mặt"]
-        );
-      if (!present) return;
-
-      // find class/course price
-      const classId = session["Class ID"];
-      const classInfo = classes.find((c) => c.id === classId);
-      let pricePerSession = 0;
-      if (classInfo) {
-        const course = courses.find((c) => {
-          if (c.Khối !== classInfo.Khối) return false;
-          const classSubject = classInfo["Môn học"];
-          const courseSubject = c["Môn học"];
-          if (classSubject === courseSubject) return true;
-          const subjectOption = subjectOptions.find(
-            (opt) => opt.label === classSubject || opt.value === classSubject
-          );
-          if (subjectOption) {
-            return (
-              courseSubject === subjectOption.label ||
-              courseSubject === subjectOption.value
-            );
+    } else {
+      // Calculate debt from previous months (original logic)
+      // 1) Include persisted invoices from Firebase (studentInvoiceStatus)
+      Object.entries(studentInvoiceStatus).forEach(([key, data]) => {
+        if (!data || typeof data === "string") return;
+        const sid = data.studentId;
+        const m = data.month ?? null;
+        const y = data.year ?? null;
+        if (!sid || m === null || y === null) return;
+        // Only consider invoices for the current student
+        if (sid !== invoice.studentId) return;
+        // Only consider months strictly before the invoice month/year
+        if (y < invoice.year || (y === invoice.year && m < invoice.month)) {
+          const status = data.status || "unpaid";
+          if (status !== "paid") {
+            const amt = data.finalAmount ?? data.totalAmount ?? 0;
+            const mapKey = `${y}-${m}`;
+            debtMap[mapKey] = {
+              month: m,
+              year: y,
+              amount: (debtMap[mapKey]?.amount || 0) + amt,
+            };
           }
-          return false;
-        });
-        pricePerSession = course?.Giá || 0;
-      }
+        }
+      });
 
-      const mapKey = `${sYear}-${sMonth}`;
-      // If there's a persisted invoice for this month and it's marked paid, skip adding
-      const persistedKey = `${invoice.studentId}-${sMonth}-${sYear}`;
-      const persisted = studentInvoiceStatus[persistedKey];
-      const persistedStatus =
-        typeof persisted === "object" ? persisted.status : persisted;
-      if (persistedStatus === "paid") return;
+      // 2) Derive unpaid amounts from sessions for months that may not have persisted invoice entries
+      sessions.forEach((session) => {
+        if (!session["Ngày"] || !session["Điểm danh"]) return;
+        const sessionDate = new Date(session["Ngày"]);
+        const sMonth = sessionDate.getMonth();
+        const sYear = sessionDate.getFullYear();
+        // only consider months strictly before current invoice month/year
+        if (
+          !(
+            sYear < invoice.year ||
+            (sYear === invoice.year && sMonth < invoice.month)
+          )
+        )
+          return;
 
-      debtMap[mapKey] = debtMap[mapKey] || {
-        month: sMonth,
-        year: sYear,
-        amount: 0,
-      };
-      debtMap[mapKey].amount += pricePerSession;
-    });
+        // check if student was present in this session
+        const present =
+          Array.isArray(session["Điểm danh"]) &&
+          session["Điểm danh"].some(
+            (r: any) => r["Student ID"] === invoice.studentId && r["Có mặt"]
+          );
+        if (!present) return;
 
-    // Convert debtMap to sorted array, filter out months with amount = 0
-    const debtDetails = Object.values(debtMap)
-      .filter((d) => d.amount > 0)
-      .sort((a, b) => a.year - b.year || a.month - b.month);
-    const totalDebt = debtDetails.reduce((sum, d) => sum + (d.amount || 0), 0);
+        // find class/course price
+        const classId = session["Class ID"];
+        const classInfo = classes.find((c) => c.id === classId);
+        let pricePerSession = 0;
+        if (classInfo) {
+          const course = courses.find((c) => {
+            if (c.Khối !== classInfo.Khối) return false;
+            const classSubject = classInfo["Môn học"];
+            const courseSubject = c["Môn học"];
+            if (classSubject === courseSubject) return true;
+            const subjectOption = subjectOptions.find(
+              (opt) => opt.label === classSubject || opt.value === classSubject
+            );
+            if (subjectOption) {
+              return (
+                courseSubject === subjectOption.label ||
+                courseSubject === subjectOption.value
+              );
+            }
+            return false;
+          });
+          pricePerSession = course?.Giá || 0;
+        }
+
+        const mapKey = `${sYear}-${sMonth}`;
+        // If there's a persisted invoice for this month and it's marked paid, skip adding
+        const persistedKey = `${invoice.studentId}-${sMonth}-${sYear}`;
+        const persisted = studentInvoiceStatus[persistedKey];
+        const persistedStatus =
+          typeof persisted === "object" ? persisted.status : persisted;
+        if (persistedStatus === "paid") return;
+
+        debtMap[mapKey] = debtMap[mapKey] || {
+          month: sMonth,
+          year: sYear,
+          amount: 0,
+        };
+        debtMap[mapKey].amount += pricePerSession;
+      });
+
+      // Convert debtMap to sorted array, filter out months with amount = 0
+      debtDetails = Object.values(debtMap)
+        .filter((d) => d.amount > 0)
+        .sort((a, b) => a.year - b.year || a.month - b.month);
+      totalDebt = debtDetails.reduce((sum, d) => sum + (d.amount || 0), 0);
+    } // End of else block (no saved debt)
 
     // Build debt summary for display in receipt (simplified version)
     const debtSummary = debtDetails.length > 0
@@ -3100,18 +3129,9 @@ const InvoicePage = () => {
         key: "totalAmount",
         width: 150,
         render: (_: any, record: GroupedStudentInvoice) => (
-          <InputNumber
-            value={record.totalAmount}
-            min={0}
-            size="small"
-            style={{ width: "100%" }}
-            formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}
-            parser={(v) => Number((v || "0").toString().replace(/,/g, ""))}
-            onChange={(val) => {
-              const newTotal = typeof val === "number" ? val : 0;
-              handleInlineUpdateTotalAmount(record, newTotal);
-            }}
-          />
+          <Text style={{ fontSize: 14 }}>
+            {record.totalAmount.toLocaleString("vi-VN")} đ
+          </Text>
         ),
       },
       {
@@ -3158,9 +3178,19 @@ const InvoicePage = () => {
         key: "debt",
         width: 130,
         render: (_: any, record: GroupedStudentInvoice) => {
-          // Nợ học phí = nợ từ các tháng trước (không bao gồm tháng hiện tại)
-          // Nếu không có tháng trước thì = 0đ
-          const debt = calculateStudentTotalDebt(record.studentId, record.month, record.year);
+          // Nợ học phí = đọc từ database đã lưu, nếu không có thì tính toán
+          let debt = 0;
+          // Kiểm tra trong từng invoice của student có debt đã lưu không
+          record.invoices.forEach((inv) => {
+            const invoiceData = studentInvoiceStatus[inv.id];
+            if (typeof invoiceData === "object" && invoiceData.debt !== undefined) {
+              debt = invoiceData.debt; // Lấy debt đã lưu
+            }
+          });
+          // Nếu không có debt đã lưu, tính toán từ các tháng trước
+          if (debt === 0) {
+            debt = calculateStudentTotalDebt(record.studentId, record.month, record.year);
+          }
           return (
             <Text strong style={{ color: debt > 0 ? "#ff4d4f" : "#52c41a", fontSize: "14px" }}>
               {debt.toLocaleString("vi-VN")} đ
@@ -3173,9 +3203,21 @@ const InvoicePage = () => {
         key: "totalDebt",
         width: 140,
         render: (_: any, record: GroupedStudentInvoice) => {
-          const totalDebt = calculateStudentTotalDebt(record.studentId, record.month, record.year);
-          const currentDebt = record.status === "unpaid" ? record.finalAmount : 0;
-          const combinedDebt = totalDebt + currentDebt;
+          // Đọc debt từ database
+          let debt = 0;
+          record.invoices.forEach((inv) => {
+            const invoiceData = studentInvoiceStatus[inv.id];
+            if (typeof invoiceData === "object" && invoiceData.debt !== undefined) {
+              debt = invoiceData.debt;
+            }
+          });
+          // Nếu không có debt đã lưu, tính toán
+          if (debt === 0) {
+            debt = calculateStudentTotalDebt(record.studentId, record.month, record.year);
+          }
+          // Tổng nợ lũy kế = Phải thu (thành tiền) + Nợ cũ
+          const thanhTien = record.status === "unpaid" ? record.finalAmount : 0;
+          const combinedDebt = thanhTien + debt;
           return (
             <Text strong style={{ color: combinedDebt > 0 ? "#ff4d4f" : "#52c41a", fontSize: "14px" }}>
               {combinedDebt.toLocaleString("vi-VN")} đ
@@ -3242,6 +3284,12 @@ const InvoicePage = () => {
                   });
                   setEditSessionPrices(prices);
                   setEditDiscount(mergedInvoice.discount || 0);
+                  // Load debt from Firebase or calculate if not exists
+                  const invoiceData = studentInvoiceStatus[mergedInvoice.id];
+                  const savedDebt = typeof invoiceData === "object" && invoiceData.debt !== undefined 
+                    ? invoiceData.debt 
+                    : calculateStudentTotalDebt(record.studentId, record.month, record.year);
+                  setEditDebt(savedDebt);
                   setEditInvoiceModalOpen(true);
                 }}
               >
@@ -3277,7 +3325,7 @@ const InvoicePage = () => {
         },
       },
     ],
-    [viewStudentInvoice, updateStudentDiscount, updateStudentInvoiceStatus, handleDeleteInvoice, setEditingInvoice, setEditSessionPrices, setEditDiscount, setEditInvoiceModalOpen, mergeStudentInvoices, classes]
+    [viewStudentInvoice, updateStudentDiscount, updateStudentInvoiceStatus, handleDeleteInvoice, setEditingInvoice, setEditSessionPrices, setEditDiscount, setEditInvoiceModalOpen, mergeStudentInvoices, classes, studentInvoiceStatus, calculateStudentTotalDebt]
   );
 
   // Paid student invoice columns (flat, not grouped)
@@ -4264,6 +4312,7 @@ const InvoicePage = () => {
           setEditInvoiceModalOpen(false);
           setEditingInvoice(null);
           setEditDiscount(0);
+          setEditDebt(0);
           setEditSessionPrices({});
         }}
         onOk={async () => {
@@ -4299,12 +4348,14 @@ const InvoicePage = () => {
             editingInvoice.id,
             sessionBasedPrices,
             editDiscount,
-            updatedSessions
+            updatedSessions,
+            editDebt
           );
 
           setEditInvoiceModalOpen(false);
           setEditingInvoice(null);
           setEditDiscount(0);
+          setEditDebt(0);
           setEditSessionPrices({});
         }}
         okText="Lưu"
@@ -4446,16 +4497,50 @@ const InvoicePage = () => {
                 />
               </div>
 
-              <div style={{ backgroundColor: "#f6ffed", padding: "12px 16px", borderRadius: 6, border: "1px solid #b7eb8f" }}>
-                <Text strong style={{ fontSize: 16 }}>Phải thu: </Text>
-                <Text strong style={{ color: "#52c41a", fontSize: 18 }}>
-                  {Math.max(
-                    0,
-                    totalBySubject.reduce((sum, item) => sum + (item.total || 0), 0) - editDiscount
-                  ).toLocaleString("vi-VN")}{" "}
-                  đ
+              <div>
+                <Text strong style={{ display: "block", marginBottom: 4 }}>
+                  Nợ học phí:
                 </Text>
+                <InputNumber
+                  style={{ width: "100%" }}
+                  value={editDebt}
+                  onChange={(value) => setEditDebt(value || 0)}
+                  formatter={(value) =>
+                    `${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+                  }
+                  parser={(value) => Number(value!.replace(/\$\s?|(,*)/g, ""))}
+                  addonAfter="đ"
+                  min={0}
+                  placeholder="Nhập số tiền nợ học phí"
+                />
               </div>
+
+              {(() => {
+                const totalAmount = totalBySubject.reduce((sum, item) => sum + (item.total || 0), 0);
+                const thanhTien = Math.max(0, totalAmount - editDiscount);
+                const tongNoLuyKe = thanhTien + editDebt;
+                
+                return (
+                  <>
+                    <div style={{ backgroundColor: "#f6ffed", padding: "12px 16px", borderRadius: 6, border: "1px solid #b7eb8f", marginBottom: 12 }}>
+                      <Text strong style={{ fontSize: 16 }}>Phải thu (tháng này): </Text>
+                      <Text strong style={{ color: "#52c41a", fontSize: 18 }}>
+                        {thanhTien.toLocaleString("vi-VN")} đ
+                      </Text>
+                    </div>
+
+                    <div style={{ backgroundColor: "#fff1f0", padding: "12px 16px", borderRadius: 6, border: "1px solid #ffccc7" }}>
+                      <Text strong style={{ fontSize: 16 }}>Tổng nợ lũy kế: </Text>
+                      <Text strong style={{ color: "#cf1322", fontSize: 18 }}>
+                        {tongNoLuyKe.toLocaleString("vi-VN")} đ
+                      </Text>
+                      <Text style={{ display: "block", fontSize: 12, color: "#999", marginTop: 4 }}>
+                        = Phải thu ({thanhTien.toLocaleString("vi-VN")}) + Nợ cũ ({editDebt.toLocaleString("vi-VN")})
+                      </Text>
+                    </div>
+                  </>
+                );
+              })()}
             </Space>
           );
         })()}
