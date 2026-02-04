@@ -195,6 +195,11 @@ const InvoicePage = () => {
   // State to track individual session prices when editing
   const [editSessionPrices, setEditSessionPrices] = useState<{ [sessionId: string]: number }>({});
 
+  // Edit teacher salary modal state
+  const [editingTeacherSalary, setEditingTeacherSalary] = useState<TeacherSalary | null>(null);
+  const [editTeacherSessionSalaries, setEditTeacherSessionSalaries] = useState<{ [sessionId: string]: number }>({});
+  const [editTeacherModalOpen, setEditTeacherModalOpen] = useState<boolean>(false);
+
   // Helpers to handle keys that are invalid in Firebase paths (like containing '/')
   const sanitizeKey = (key: string) => key.replace(/[.#$\/[\]]/g, "_");
 
@@ -273,6 +278,7 @@ const InvoicePage = () => {
         totalMinutes?: number;
         totalSalary?: number;
         totalAllowance?: number;
+        sessionSalaries?: { [sessionId: string]: number }; // Custom salaries per session
         paidAt?: string;
         bankInfo?: {
           bank: string | null;
@@ -587,12 +593,24 @@ const InvoicePage = () => {
 
         const classId = session["Class ID"];
         const classInfo = classes.find((c) => c.id === classId);
-        // Lấy Lương GV - ưu tiên từ session, fallback về class, cuối cùng là teacher
-        // Ưu tiên: Session > Class > Teacher
-        const salaryPerSession =
-          parseCurrency(session["Lương GV"]) ||          // 1. Từ Session (ưu tiên)
-          parseCurrency(classInfo?.["Lương GV"]) ||       // 2. Từ Lớp học (fallback)
-          parseCurrency(teacher["Lương theo buổi"]);     // 3. Từ Giáo viên (fallback cuối)
+        
+        // Check if there's saved session salary from database (for edited salaries)
+        const savedData = teacherSalaryStatus[key];
+        const savedSessionSalaries = (typeof savedData === "object" && savedData?.sessionSalaries) 
+          ? savedData.sessionSalaries 
+          : null;
+        
+        // Priority: 1. Saved session salary > 2. Session > 3. Class > 4. Teacher
+        let salaryPerSession = 0;
+        if (savedSessionSalaries && savedSessionSalaries[session.id] !== undefined) {
+          salaryPerSession = savedSessionSalaries[session.id];
+        } else {
+          salaryPerSession =
+            parseCurrency(getSafeField(session, "Lương/buổi")) ||          // Lương/buổi từ session
+            parseCurrency(session["Lương GV"]) ||          // 1. Từ Session (ưu tiên)
+            parseCurrency(classInfo?.["Lương GV"]) ||       // 2. Từ Lớp học (fallback)
+            parseCurrency(teacher["Lương theo buổi"]);     // 3. Từ Giáo viên (fallback cuối)
+        }
 
         if (!salariesMap[key]) {
           // Normalize status - handle both direct value and nested object
@@ -1223,6 +1241,81 @@ const InvoicePage = () => {
     } catch (error) {
       console.error("Error updating discount:", error);
       message.error("Lỗi khi cập nhật miễn giảm");
+    }
+  };
+
+  // Update teacher salary with custom session salaries
+  const updateTeacherSalaryWithSessionSalaries = async (
+    salaryId: string,
+    sessionSalaries: { [sessionId: string]: number },
+    updatedSessions?: AttendanceSession[]
+  ) => {
+    try {
+      const currentData = teacherSalaryStatus[salaryId];
+      const currentStatus =
+        typeof currentData === "object" ? currentData.status : currentData;
+
+      if (currentStatus === "paid") {
+        message.error("Không thể cập nhật phiếu lương đã thanh toán.");
+        return;
+      }
+
+      const currentSalary = teacherSalaries.find((s) => s.id === salaryId);
+      if (!currentSalary) {
+        message.error("Không tìm thấy thông tin phiếu lương");
+        return;
+      }
+
+      const sessionsToUse: AttendanceSession[] = updatedSessions && updatedSessions.length > 0
+        ? updatedSessions
+        : (currentSalary.sessions || []).map((session: AttendanceSession) => {
+          const newSalary = sessionSalaries[session.id];
+          if (newSalary !== undefined) {
+            return { ...session, [sanitizeKey("Lương/buổi")]: newSalary } as AttendanceSession;
+          }
+          return session;
+        });
+
+      // Calculate new totals
+      let totalSalary = 0;
+      let totalMinutes = 0;
+      sessionsToUse.forEach((session) => {
+        const salary = Number(getSafeField(session, "Lương/buổi") || sessionSalaries[session.id] || 0);
+        totalSalary += salary;
+        
+        // Calculate duration
+        const startTime = session["Giờ bắt đầu"];
+        const endTime = session["Giờ kết thúc"];
+        if (startTime && endTime) {
+          const [startHour, startMin] = startTime.split(":").map(Number);
+          const [endHour, endMin] = endTime.split(":").map(Number);
+          const duration = (endHour * 60 + endMin) - (startHour * 60 + startMin);
+          totalMinutes += duration;
+        }
+      });
+
+      const totalHours = Math.floor(totalMinutes / 60);
+      const remainingMinutes = totalMinutes % 60;
+
+      const salaryRef = ref(database, `datasheet/Phiếu_lương_giáo_viên/${salaryId}`);
+
+      const updateData = {
+        ...(typeof currentData === "object" ? currentData : { status: currentStatus || "unpaid" }),
+        sessions: sessionsToUse,
+        sessionSalaries,
+        totalSessions: sessionsToUse.length,
+        totalSalary,
+        totalHours,
+        totalMinutes: remainingMinutes,
+      };
+
+      const safeData = sanitizeObjectKeys(updateData);
+      await set(salaryRef, safeData);
+      message.success("Đã cập nhật phiếu lương giáo viên");
+      setRefreshTrigger((prev) => prev + 1);
+    } catch (error) {
+      console.error("Error updating teacher salary:", error);
+      message.error("Lỗi khi cập nhật phiếu lương");
     }
   };
 
@@ -3619,28 +3712,41 @@ const InvoicePage = () => {
       }
     } else {
       // For unpaid salaries, calculate from current data
+      // Get saved session salaries from database if available
+      const savedData = teacherSalaryStatus[record.id];
+      const savedSessionSalaries = (typeof savedData === "object" && savedData?.sessionSalaries)
+        ? savedData.sessionSalaries
+        : {};
+      
       record.sessions.forEach((session) => {
         const className = session["Tên lớp"] || "";
         const classCode = session["Mã lớp"] || "";
-        const key = `${classCode}-${className}`;
+        const classId = session["Class ID"];
+        const key = `${classId}`; // Use classId as key for consistency
 
         // Find class info using Class ID from session
-        const classId = session["Class ID"];
         const classInfo = classes.find((c) => c.id === classId);
 
-        // Find course using Khối and Môn học from class info
-        const course = classInfo
-          ? courses.find(
-            (c) =>
-              c.Khối === classInfo.Khối &&
-              c["Môn học"] === classInfo["Môn học"]
-          )
-          : undefined;
-
-        const salaryPerSession =
-          record.bienChe === "Full-time"
-            ? course?.["Lương GV Full-time"] || 0
-            : course?.["Lương GV Part-time"] || 0;
+        // Priority: saved sessionSalaries > session Lương/buổi > course salary > 0
+        let salaryPerSession = 0;
+        if (savedSessionSalaries[session.id] !== undefined) {
+          salaryPerSession = savedSessionSalaries[session.id];
+        } else if (getSafeField(session, "Lương/buổi")) {
+          salaryPerSession = Number(getSafeField(session, "Lương/buổi"));
+        } else {
+          // Find course using Khối and Môn học from class info
+          const course = classInfo
+            ? courses.find(
+              (c) =>
+                c.Khối === classInfo.Khối &&
+                c["Môn học"] === classInfo["Môn học"]
+            )
+            : undefined;
+          salaryPerSession =
+            record.bienChe === "Full-time"
+              ? course?.["Lương GV Full-time"] || 0
+              : course?.["Lương GV Part-time"] || 0;
+        }
 
         if (!classSummary[key]) {
           classSummary[key] = {
@@ -3654,6 +3760,7 @@ const InvoicePage = () => {
         }
 
         classSummary[key].sessionCount++;
+        classSummary[key].salaryPerSession = salaryPerSession; // Update to use per-session salary
         classSummary[key].totalSalary += salaryPerSession;
         // Calculate allowance = allowancePerSession * sessionCount for this class
         classSummary[key].totalAllowance =
@@ -3848,14 +3955,49 @@ const InvoicePage = () => {
             Xem
           </Button>
           {record.status !== "paid" && (
-            <Button
-              size="small"
-              type="primary"
-              icon={<CheckCircleOutlined />}
-              onClick={() => updateTeacherSalaryStatus(record.id, "paid")}
-            >
-              Đã TT
-            </Button>
+            <>
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => {
+                  setEditingTeacherSalary(record);
+                  const salaries: Record<string, number> = {};
+                  
+                  // Get saved session salaries from database
+                  const savedData = teacherSalaryStatus[record.id];
+                  const savedSessionSalaries = (typeof savedData === "object" && savedData?.sessionSalaries)
+                    ? savedData.sessionSalaries
+                    : {};
+                  
+                  // Group by class and get salary (prioritize saved data)
+                  record.sessions?.forEach((session: AttendanceSession) => {
+                    const classId = session["Class ID"];
+                    const classKey = `${classId}`;
+                    if (salaries[classKey] === undefined) {
+                      // Priority: saved sessionSalaries > session Lương/buổi > record.salaryPerSession
+                      const savedSalary = savedSessionSalaries[session.id];
+                      if (savedSalary !== undefined) {
+                        salaries[classKey] = savedSalary;
+                      } else {
+                        salaries[classKey] = Number(getSafeField(session, "Lương/buổi")) || record.salaryPerSession || 0;
+                      }
+                    }
+                  });
+                  setEditTeacherSessionSalaries(salaries);
+                  setEditTeacherModalOpen(true);
+                }}
+              >
+                Sửa
+              </Button>
+              <Button
+                size="small"
+                type="primary"
+                icon={<CheckCircleOutlined />}
+                onClick={() => updateTeacherSalaryStatus(record.id, "paid")}
+              >
+                Đã TT
+              </Button>
+            </>
           )}
         </Space>
       ),
@@ -4541,6 +4683,194 @@ const InvoicePage = () => {
                   </>
                 );
               })()}
+            </Space>
+          );
+        })()}
+      </Modal>
+
+      {/* Edit Teacher Salary Modal */}
+      <Modal
+        title="Chỉnh sửa phiếu lương giáo viên"
+        open={editTeacherModalOpen}
+        width={800}
+        onCancel={() => {
+          setEditTeacherModalOpen(false);
+          setEditingTeacherSalary(null);
+          setEditTeacherSessionSalaries({});
+        }}
+        onOk={async () => {
+          if (!editingTeacherSalary) return;
+
+          // Build updated sessions array where each session gets the salary defined by its class
+          const sessionBasedSalaries: Record<string, number> = {};
+          const updatedSessions: AttendanceSession[] = [];
+
+          editingTeacherSalary.sessions.forEach((session: AttendanceSession) => {
+            const classId = session["Class ID"];
+            const classKey = `${classId}`; // Use classId as key
+
+            const salaryForClass = editTeacherSessionSalaries[classKey];
+            const salaryToUse = salaryForClass !== undefined ? salaryForClass : (getSafeField(session, "Lương/buổi") || 0);
+
+            const updated = {
+              ...session,
+              [sanitizeKey("Lương/buổi")]: salaryToUse,
+            } as AttendanceSession;
+            updatedSessions.push(updated);
+            sessionBasedSalaries[session.id] = salaryToUse;
+          });
+
+          await updateTeacherSalaryWithSessionSalaries(
+            editingTeacherSalary.id,
+            sessionBasedSalaries,
+            updatedSessions
+          );
+
+          setEditTeacherModalOpen(false);
+          setEditingTeacherSalary(null);
+          setEditTeacherSessionSalaries({});
+        }}
+        okText="Lưu"
+        cancelText="Hủy"
+      >
+        {editingTeacherSalary && (() => {
+          // Group sessions by class (Lớp học)
+          const classGroups: Record<string, {
+            classId: string;
+            className: string;
+            classCode: string;
+            subject: string;
+            sessionCount: number;
+            sessions: AttendanceSession[];
+            currentSalary: number;
+          }> = {};
+
+          editingTeacherSalary.sessions.forEach((session: AttendanceSession) => {
+            const classId = session["Class ID"];
+            const classData = classes.find(c => c.id === classId);
+            const className = session["Tên lớp"] || classData?.["Tên lớp"] || "Chưa xác định";
+            const classCode = session["Mã lớp"] || classData?.["Mã lớp"] || "";
+            const subject = classData?.["Môn học"] || session["Môn học"] || "Chưa xác định";
+            const classKey = `${classId}`;
+
+            if (!classGroups[classKey]) {
+              classGroups[classKey] = {
+                classId,
+                className,
+                classCode,
+                subject,
+                sessionCount: 0,
+                sessions: [],
+                currentSalary: editTeacherSessionSalaries[classKey] || (getSafeField(session, "Lương/buổi") || 0),
+              };
+            }
+
+            classGroups[classKey].sessionCount++;
+            classGroups[classKey].sessions.push(session);
+          });
+
+          const totalByClass = Object.entries(classGroups).map(([classKey, data]) => ({
+            classKey,
+            ...data,
+            total: (editTeacherSessionSalaries[classKey] || data.currentSalary || 0) * data.sessionCount,
+          }));
+
+          const totalSalary = totalByClass.reduce((sum, item) => sum + (item.total || 0), 0);
+
+          return (
+            <Space direction="vertical" style={{ width: "100%" }} size="middle">
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Text strong>Giáo viên: </Text>
+                  <Text>{editingTeacherSalary.teacherName}</Text>
+                </Col>
+                <Col span={12}>
+                  <Text strong>Tháng: </Text>
+                  <Text>{`${editingTeacherSalary.month + 1}/${editingTeacherSalary.year}`}</Text>
+                </Col>
+              </Row>
+
+              <div>
+                <Text strong style={{ display: "block", marginBottom: 8 }}>
+                  Chi tiết theo lớp học ({Object.keys(classGroups).length} lớp):
+                </Text>
+                <div style={{ maxHeight: 400, overflowY: "auto", border: "1px solid #d9d9d9", borderRadius: 6 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ backgroundColor: "#fafafa", position: "sticky", top: 0 }}>
+                        <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #d9d9d9", width: "25%" }}>Lớp học</th>
+                        <th style={{ padding: "8px 12px", textAlign: "left", borderBottom: "1px solid #d9d9d9", width: "20%" }}>Môn học</th>
+                        <th style={{ padding: "8px 12px", textAlign: "center", borderBottom: "1px solid #d9d9d9", width: "12%" }}>Số buổi</th>
+                        <th style={{ padding: "8px 12px", textAlign: "right", borderBottom: "1px solid #d9d9d9", width: "23%" }}>Lương/buổi (đ)</th>
+                        <th style={{ padding: "8px 12px", textAlign: "right", borderBottom: "1px solid #d9d9d9", width: "20%" }}>Tổng tiền (đ)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {totalByClass.map((item, index) => (
+                        <tr key={item.classKey} style={{ borderBottom: "1px solid #f0f0f0" }}>
+                          <td style={{ padding: "12px" }}>
+                            <Text strong>{item.className}</Text>
+                            {item.classCode && (
+                              <Text style={{ display: "block", fontSize: 12, color: "#999" }}>({item.classCode})</Text>
+                            )}
+                          </td>
+                          <td style={{ padding: "12px" }}>
+                            <Text>{item.subject}</Text>
+                          </td>
+                          <td style={{ padding: "12px", textAlign: "center" }}>
+                            <Tag color="blue">{item.sessionCount} buổi</Tag>
+                          </td>
+                          <td style={{ padding: "12px", textAlign: "right" }}>
+                            <InputNumber
+                              size="small"
+                              min={0}
+                              value={editTeacherSessionSalaries[item.classKey] ?? item.currentSalary}
+                              onChange={(value) => {
+                                setEditTeacherSessionSalaries((prev) => ({
+                                  ...prev,
+                                  [item.classKey]: value || 0,
+                                }));
+                              }}
+                              formatter={(value) =>
+                                `${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+                              }
+                              parser={(value) =>
+                                Number(value!.replace(/\$\s?|(,*)/g, ""))
+                              }
+                              style={{ width: 140 }}
+                            />
+                          </td>
+                          <td style={{ padding: "12px", textAlign: "right" }}>
+                            <Text strong style={{ color: "#1890ff" }}>
+                              {((editTeacherSessionSalaries[item.classKey] ?? item.currentSalary) * item.sessionCount).toLocaleString("vi-VN")} đ
+                            </Text>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Text strong>Tổng lương: </Text>
+                  <Text style={{ color: "#36797f", fontSize: 15 }}>
+                    {totalSalary.toLocaleString("vi-VN")} đ
+                  </Text>
+                </Col>
+                <Col span={12}>
+                  <Text strong>Tổng số buổi: </Text>
+                  <Text>{editingTeacherSalary.sessions.length} buổi</Text>
+                </Col>
+              </Row>
+
+              <div style={{ backgroundColor: "#f6ffed", padding: "12px 16px", borderRadius: 6, border: "1px solid #b7eb8f" }}>
+                <Text strong style={{ fontSize: 16 }}>Tổng thanh toán: </Text>
+                <Text strong style={{ color: "#52c41a", fontSize: 18 }}>
+                  {totalSalary.toLocaleString("vi-VN")} đ
+                </Text>
+              </div>
             </Space>
           );
         })()}
